@@ -65,34 +65,57 @@ struct WhiskyWineDownloadView: View {
         .frame(width: 400, height: 200)
         .onAppear {
             Task {
-                if let url: URL = URL(string: "https://data.getwhisky.app/Wine/Libraries.tar.gz") {
-                    downloadTask = URLSession(configuration: .ephemeral).downloadTask(with: url) { url, _, _ in
-                        Task.detached {
-                            await MainActor.run {
-                                if let url = url {
-                                    tarLocation = url
-                                    proceed()
-                                }
-                            }
-                        }
+                if WhiskyWineDistribution.runtimeArchiveURL.isFileURL {
+                    await MainActor.run {
+                        downloadSpeed = 0
+                        completedBytes = 1
+                        totalBytes = 1
+                        fractionProgress = 1
                     }
-                    observation = downloadTask?.observe(\.countOfBytesReceived) { task, _ in
-                        Task {
-                            await MainActor.run {
-                                let currentTime = Date()
-                                let elapsedTime = currentTime.timeIntervalSince(startTime ?? currentTime)
-                                if completedBytes > 0 {
-                                    downloadSpeed = Double(completedBytes) / elapsedTime
-                                }
-                                totalBytes = task.countOfBytesExpectedToReceive
-                                completedBytes = task.countOfBytesReceived
-                                fractionProgress = Double(completedBytes) / Double(totalBytes)
-                            }
+
+                    do {
+                        let localArchive = try copyLocalRuntimeArchiveToTemporaryFile(
+                            from: WhiskyWineDistribution.runtimeArchiveURL
+                        )
+
+                        await MainActor.run {
+                            tarLocation = localArchive
+                            proceed()
                         }
+                    } catch {
+                        print("Failed to load local runtime archive: \(error)")
                     }
-                    startTime = Date()
-                    downloadTask?.resume()
+
+                    return
                 }
+
+                let session = URLSession(configuration: .ephemeral)
+                downloadTask = session.downloadTask(with: WhiskyWineDistribution.runtimeArchiveURL) { url, _, _ in
+                    Task.detached {
+                        await MainActor.run {
+                            if let url = url {
+                                tarLocation = url
+                                proceed()
+                            }
+                        }
+                    }
+                }
+                observation = downloadTask?.observe(\.countOfBytesReceived) { task, _ in
+                    Task {
+                        await MainActor.run {
+                            let currentTime = Date()
+                            let elapsedTime = currentTime.timeIntervalSince(startTime ?? currentTime)
+                            if completedBytes > 0 {
+                                downloadSpeed = Double(completedBytes) / elapsedTime
+                            }
+                            totalBytes = task.countOfBytesExpectedToReceive
+                            completedBytes = task.countOfBytesReceived
+                            fractionProgress = Double(completedBytes) / Double(totalBytes)
+                        }
+                    }
+                }
+                startTime = Date()
+                downloadTask?.resume()
             }
         }
     }
@@ -124,5 +147,18 @@ struct WhiskyWineDownloadView: View {
 
     func proceed() {
         path.append(.whiskyWineInstall)
+    }
+
+    func copyLocalRuntimeArchiveToTemporaryFile(from sourceURL: URL) throws -> URL {
+        let fileManager = FileManager.default
+        let destinationURL = fileManager.temporaryDirectory.appending(path: UUID().uuidString)
+            .appendingPathExtension("tar.gz")
+
+        if fileManager.fileExists(atPath: destinationURL.path(percentEncoded: false)) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+
+        try fileManager.copyItem(at: sourceURL, to: destinationURL)
+        return destinationURL
     }
 }

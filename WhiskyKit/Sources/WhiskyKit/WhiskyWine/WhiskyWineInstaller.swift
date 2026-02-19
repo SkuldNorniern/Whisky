@@ -17,6 +17,7 @@
 //
 
 import Foundation
+import CryptoKit
 import SemanticVersion
 
 public class WhiskyWineInstaller {
@@ -35,20 +36,40 @@ public class WhiskyWineInstaller {
         return whiskyWineVersion() != nil
     }
 
-    public static func install(from: URL) {
+    public static func install(from archiveURL: URL) async -> Bool {
+        defer {
+            try? FileManager.default.removeItem(at: archiveURL)
+        }
+
+        if let expectedChecksum = await fetchRuntimeArchiveChecksum() {
+            do {
+                let actualChecksum = try sha256Hex(for: archiveURL)
+                if actualChecksum != expectedChecksum {
+                    print("Runtime checksum mismatch. Expected \(expectedChecksum), got \(actualChecksum).")
+                    return false
+                }
+            } catch {
+                print("Could not hash runtime archive: \(error)")
+                return false
+            }
+        } else {
+            print("Runtime checksum was unavailable. Continuing without checksum verification.")
+        }
+
         do {
             if !FileManager.default.fileExists(atPath: applicationFolder.path) {
                 try FileManager.default.createDirectory(at: applicationFolder, withIntermediateDirectories: true)
             } else {
-                // Recreate it
                 try FileManager.default.removeItem(at: applicationFolder)
                 try FileManager.default.createDirectory(at: applicationFolder, withIntermediateDirectories: true)
             }
 
-            try Tar.untar(tarBall: from, toURL: applicationFolder)
-            try FileManager.default.removeItem(at: from)
+            try Tar.untar(tarBall: archiveURL, toURL: applicationFolder)
+            try validateRuntimeLayout()
+            return true
         } catch {
             print("Failed to install WhiskyWine: \(error)")
+            return false
         }
     }
 
@@ -61,32 +82,21 @@ public class WhiskyWineInstaller {
     }
 
     public static func shouldUpdateWhiskyWine() async -> (Bool, SemanticVersion) {
-        let versionPlistURL = "https://data.getwhisky.app/Wine/WhiskyWineVersion.plist"
         let localVersion = whiskyWineVersion()
 
         var remoteVersion: SemanticVersion?
 
-        if let remoteUrl = URL(string: versionPlistURL) {
-            remoteVersion = await withCheckedContinuation { continuation in
-                URLSession(configuration: .ephemeral).dataTask(with: URLRequest(url: remoteUrl)) { data, _, error in
-                    do {
-                        if error == nil, let data = data {
-                            let decoder = PropertyListDecoder()
-                            let remoteInfo = try decoder.decode(WhiskyWineVersion.self, from: data)
-                            let remoteVersion = remoteInfo.version
-
-                            continuation.resume(returning: remoteVersion)
-                            return
-                        }
-                        if let error = error {
-                            print(error)
-                        }
-                    } catch {
-                        print(error)
-                    }
-
+        remoteVersion = await withCheckedContinuation { continuation in
+            Task.detached {
+                do {
+                    let data = try await fetchData(from: WhiskyWineDistribution.versionMetadataURL)
+                    let decoder = PropertyListDecoder()
+                    let remoteInfo = try decoder.decode(WhiskyWineVersion.self, from: data)
+                    continuation.resume(returning: remoteInfo.version)
+                } catch {
+                    print(error)
                     continuation.resume(returning: nil)
-                }.resume()
+                }
             }
         }
 
@@ -97,6 +107,101 @@ public class WhiskyWineInstaller {
         }
 
         return (false, SemanticVersion(0, 0, 0))
+    }
+
+    private static func fetchRuntimeArchiveChecksum() async -> String? {
+        await withCheckedContinuation { continuation in
+            Task.detached {
+                guard let data = try? await fetchData(from: WhiskyWineDistribution.runtimeArchiveChecksumURL),
+                      let checksumBody = String(data: data, encoding: .utf8) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                let checksum = checksumBody
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+                    .first
+                    .map(String.init)
+                    ?? ""
+
+                let validCharacters = CharacterSet(charactersIn: "0123456789abcdefABCDEF")
+                if checksum.count == 64,
+                   checksum.unicodeScalars.allSatisfy({ validCharacters.contains($0) }) {
+                    continuation.resume(returning: checksum.lowercased())
+                } else {
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
+    }
+
+    private static func fetchData(from url: URL) async throws -> Data {
+        if url.isFileURL {
+            return try Data(contentsOf: url)
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let request = URLRequest(url: url)
+            URLSession(configuration: .ephemeral).dataTask(with: request) { data, _, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+
+                guard let data else {
+                    continuation.resume(throwing: URLError(.badServerResponse))
+                    return
+                }
+
+                continuation.resume(returning: data)
+            }.resume()
+        }
+    }
+
+    private static func sha256Hex(for fileURL: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer {
+            try? handle.close()
+        }
+
+        var hasher = SHA256()
+        while true {
+            let chunk = try handle.read(upToCount: 64 * 1024) ?? Data()
+            if chunk.isEmpty {
+                break
+            }
+            hasher.update(data: chunk)
+        }
+
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func validateRuntimeLayout() throws {
+        let requiredPaths = [
+            libraryFolder.appending(path: "Wine/bin/wine64"),
+            libraryFolder.appending(path: "Wine/bin/wineserver"),
+            libraryFolder.appending(path: "DXVK/x64"),
+            libraryFolder.appending(path: "DXVK/x32"),
+            libraryFolder.appending(path: "winetricks"),
+            libraryFolder.appending(path: "verbs.txt"),
+            libraryFolder.appending(path: "WhiskyWineVersion.plist")
+        ]
+
+        let missingPaths = requiredPaths.filter {
+            !FileManager.default.fileExists(atPath: $0.path(percentEncoded: false))
+        }
+
+        guard missingPaths.isEmpty else {
+            let pathList = missingPaths
+                .map { $0.path(percentEncoded: false) }
+                .joined(separator: ", ")
+            throw NSError(
+                domain: "WhiskyWineInstaller",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Runtime layout validation failed. Missing: \(pathList)"]
+            )
+        }
     }
 
     public static func whiskyWineVersion() -> SemanticVersion? {
@@ -118,4 +223,28 @@ public class WhiskyWineInstaller {
 
 struct WhiskyWineVersion: Codable {
     var version: SemanticVersion = SemanticVersion(1, 0, 0)
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        if let versionString = try? container.decode(String.self, forKey: .version),
+           let parsedVersion = SemanticVersion(versionString) {
+            version = parsedVersion
+            return
+        }
+
+        version = try container.decode(SemanticVersion.self, forKey: .version)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        let versionString = "\(version.major).\(version.minor).\(version.patch)"
+        try container.encode(versionString, forKey: .version)
+    }
 }
