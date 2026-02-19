@@ -19,6 +19,8 @@
 import SwiftUI
 import WhiskyKit
 
+// swiftlint:disable file_length type_body_length
+
 enum LoadingState {
     case loading
     case modifying
@@ -28,9 +30,11 @@ enum LoadingState {
 
 struct ConfigView: View {
     @ObservedObject var bottle: Bottle
-    @State private var buildVersion: Int = 0
+    @State private var buildVersion: String = ""
     @State private var retinaMode: Bool = false
     @State private var dpiConfig: Int = 96
+    @State private var detectedBottleRuntimeVersion: String = "Detecting..."
+    @State private var launchErrorMessage: String?
     @State private var winVersionLoadingState: LoadingState = .loading
     @State private var buildVersionLoadingState: LoadingState = .loading
     @State private var retinaModeLoadingState: LoadingState = .loading
@@ -43,6 +47,14 @@ struct ConfigView: View {
     var body: some View {
         Form {
             Section("config.title.wine", isExpanded: $wineSectionExpanded) {
+                HStack {
+                    Text("Active Runtime (Bottle)")
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(detectedBottleRuntimeVersion)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
                 SettingItemView(title: "config.winVersion", loadingState: winVersionLoadingState) {
                     Picker("config.winVersion", selection: $bottle.settings.windowsVersion) {
                         ForEach(WinVersion.allCases.reversed(), id: \.self) {
@@ -51,14 +63,20 @@ struct ConfigView: View {
                     }
                 }
                 SettingItemView(title: "config.buildVersion", loadingState: buildVersionLoadingState) {
-                    TextField("config.buildVersion", value: $buildVersion, formatter: NumberFormatter())
+                    TextField("config.buildVersion", text: $buildVersion)
                         .multilineTextAlignment(.trailing)
                         .textFieldStyle(PlainTextFieldStyle())
                         .onSubmit {
                             buildVersionLoadingState = .modifying
                             Task(priority: .userInitiated) {
                                 do {
-                                    try await Wine.changeBuildVersion(bottle: bottle, version: buildVersion)
+                                    let trimmed = buildVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    guard let parsedVersion = Int(trimmed), parsedVersion > 0 else {
+                                        buildVersionLoadingState = .failed
+                                        return
+                                    }
+
+                                    try await Wine.changeBuildVersion(bottle: bottle, version: parsedVersion)
                                     buildVersionLoadingState = .success
                                 } catch {
                                     print("Failed to change build version")
@@ -164,7 +182,7 @@ struct ConfigView: View {
                         do {
                             try await Wine.control(bottle: bottle)
                         } catch {
-                            print("Failed to launch control")
+                            launchErrorMessage = "Failed to launch Control Panel: \(error.localizedDescription)"
                         }
                     }
                 }
@@ -173,7 +191,7 @@ struct ConfigView: View {
                         do {
                             try await Wine.regedit(bottle: bottle)
                         } catch {
-                            print("Failed to launch regedit")
+                            launchErrorMessage = "Failed to launch Registry Editor: \(error.localizedDescription)"
                         }
                     }
                 }
@@ -182,16 +200,31 @@ struct ConfigView: View {
                         do {
                             try await Wine.cfg(bottle: bottle)
                         } catch {
-                            print("Failed to launch winecfg")
+                            launchErrorMessage = "Failed to launch Wine Configuration: \(error.localizedDescription)"
                         }
                     }
                 }
             }
             .padding()
         }
+        .alert("Launch Failed", isPresented: Binding(
+            get: { launchErrorMessage != nil },
+            set: { isPresented in
+                if !isPresented {
+                    launchErrorMessage = nil
+                }
+            }
+        )) {
+            Button("OK") {
+                launchErrorMessage = nil
+            }
+        } message: {
+            Text(launchErrorMessage ?? "Unknown error")
+        }
         .navigationTitle("tab.config")
         .onAppear {
             winVersionLoadingState = .success
+            refreshDetectedBottleRuntimeVersion()
 
             loadBuildName()
 
@@ -252,9 +285,9 @@ struct ConfigView: View {
         Task(priority: .userInitiated) {
             do {
                 if let buildVersionString = try await Wine.buildVersion(bottle: bottle) {
-                    buildVersion = Int(buildVersionString) ?? 0
+                    buildVersion = buildVersionString
                 } else {
-                    buildVersion = 0
+                    buildVersion = ""
                 }
 
                 buildVersionLoadingState = .success
@@ -264,6 +297,34 @@ struct ConfigView: View {
             }
         }
     }
+
+    func refreshDetectedBottleRuntimeVersion() {
+        Task(priority: .userInitiated) {
+            do {
+                let output = try await Wine.runWine(["--version"], bottle: bottle)
+                await MainActor.run {
+                    detectedBottleRuntimeVersion = parseWineVersion(output)
+                }
+            } catch {
+                await MainActor.run {
+                    detectedBottleRuntimeVersion = "Unavailable"
+                }
+            }
+        }
+    }
+
+    func parseWineVersion(_ output: String) -> String {
+        let trimmed = output
+            .replacingOccurrences(of: "wine-", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let firstToken = trimmed.split(whereSeparator: { $0.isWhitespace }).first {
+            return String(firstToken)
+        }
+
+        return trimmed.isEmpty ? "Unavailable" : trimmed
+    }
+
 }
 
 struct DPIConfigSheetView: View {
@@ -361,7 +422,10 @@ struct SettingItemView<Content: View>: View {
                         .font(.caption).foregroundStyle(.red)
                         .multilineTextAlignment(.trailing)
                 }
-            }.animation(.default, value: loadingState)
+            }
+            .animation(.default, value: loadingState)
         }
     }
 }
+
+// swiftlint:enable file_length type_body_length

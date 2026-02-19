@@ -81,7 +81,7 @@ struct RunningProcessesView: View {
         let output: String?
 
         do {
-            output = try await Wine.runWine(["tasklist.exe"], bottle: bottle)
+            output = try await Wine.runWine(["tasklist.exe", "/FO", "CSV", "/NH"], bottle: bottle)
         } catch {
             print("Error running tasklist.exe: \(error)")
             output = ""
@@ -89,10 +89,10 @@ struct RunningProcessesView: View {
 
         let lines = output?.split(omittingEmptySubsequences: true, whereSeparator: \.isNewline)
         for line in lines ?? [] {
-            let lineParts = line.split(separator: ",", omittingEmptySubsequences: true)
-            if lineParts.count > 1 {
-                let pid = String(lineParts[1])
-                let procName = String(lineParts[0])
+            let lineParts = parseCSVTaskListLine(String(line))
+            if lineParts.count >= 2 {
+                let pid = lineParts[1]
+                let procName = lineParts[0]
                 newProcessList.append(BottleProcess(pid: pid, procName: procName))
             }
         }
@@ -103,11 +103,35 @@ struct RunningProcessesView: View {
         if let thisProcess = processes.first(where: { $0.id == selectedProcess }) {
             do {
                 try await Wine.runWine(["taskkill.exe", "/PID", thisProcess.pid, "/F"], bottle: bottle)
-                try await Task.sleep(nanoseconds: 2000)
+                try await Task.sleep(nanoseconds: 300_000_000)
             } catch {
                 print("Error running taskkill.exe: \(error)")
             }
             await fetchProcesses()
         }
+    }
+
+    private func parseCSVTaskListLine(_ line: String) -> [String] {
+        var fields = [String]()
+        var field = ""
+        var isInsideQuote = false
+
+        for character in line {
+            if character == "\"" {
+                isInsideQuote.toggle()
+                continue
+            }
+
+            if character == "," && !isInsideQuote {
+                fields.append(field)
+                field = ""
+                continue
+            }
+
+            field.append(character)
+        }
+
+        fields.append(field)
+        return fields
     }
 }
