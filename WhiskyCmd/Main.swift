@@ -79,7 +79,8 @@ extension Whisky {
                 bottle.settings.name = name
 //                try await Wine.changeWinVersion(bottle: bottle, win: winVersion)
 //                let wineVer = try await Wine.wineVersion()
-                bottle.settings.wineVersion = SemanticVersion(0, 0, 0)
+                bottle.settings.wineVersion = WhiskyWineInstaller.whiskyWineVersion()
+                    ?? WhiskyWineDistribution.defaultWineVersion
 
                 var bottlesList = BottleData()
                 bottlesList.paths.append(bottleURL)
