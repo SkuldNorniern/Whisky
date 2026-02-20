@@ -135,6 +135,8 @@ private enum VodkaLoader {
             }
         }
 
+        devNotice("Could not load vodka runtime library. Falling back to Swift path.")
+
         return nil
     }()
 
@@ -148,6 +150,8 @@ private enum VodkaLoader {
                 return unsafeBitCast(symbol, to: T.self)
             }
         }
+
+        devNotice("Could not resolve vodka symbol(s): \(symbolNames.joined(separator: ", ")).")
 
         return nil
     }
@@ -188,5 +192,15 @@ private enum VodkaLoader {
         paths.append("/usr/local/lib/libwhiskyrustcore.dylib")
 
         return paths
+    }
+
+    private static func devNotice(_ message: String) {
+#if DEBUG
+        fputs("[DEV-NOTICE] \(message)\n", stderr)
+#else
+        if ProcessInfo.processInfo.environment["WHISKY_DEV_MODE"] == "1" {
+            fputs("[DEV-NOTICE] \(message)\n", stderr)
+        }
+#endif
     }
 }
