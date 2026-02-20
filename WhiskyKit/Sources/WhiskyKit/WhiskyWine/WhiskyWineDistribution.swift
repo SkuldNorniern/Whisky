@@ -105,10 +105,8 @@ public enum WhiskyWineDistribution {
 
     public static func fetchOfficialRuntimeCatalog() async -> [RuntimeCatalogEntry] {
         await withTaskGroup(of: RuntimeCatalogEntry?.self) { group in
-            group.addTask { await fetchWhiskyOfficialRuntime() }
             group.addTask { await fetchWineHQOfficialRelease() }
-            group.addTask { await fetchWineOfficialGitHubRelease(forMajor: 7) }
-            group.addTask { await fetchWineOfficialGitHubRelease(forMajor: 8) }
+            group.addTask { await fetchWineOfficialGitHubRelease(forVersion: SemanticVersion(8, 0, 1)) }
             group.addTask { await fetchWineOfficialGitHubRelease(forVersion: SemanticVersion(9, 21, 0)) }
             group.addTask { await fetchWineOfficialGitHubRelease(forVersion: SemanticVersion(11, 2, 0)) }
 

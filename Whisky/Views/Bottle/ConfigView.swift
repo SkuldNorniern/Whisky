@@ -52,16 +52,27 @@ private struct RuntimePreset: Hashable {
     let url: URL
 }
 
+private struct RuntimeOption: Hashable {
+    let id: String
+    let version: SemanticVersion
+    let source: String
+    let url: URL?
+}
+
 struct ConfigView: View {
-    private static let hiddenBuiltinVersions: Set<SemanticVersion> = [
-        SemanticVersion(9, 0, 0),
+    private static let excludedRuntimeVersions: Set<SemanticVersion> = [
         SemanticVersion(11, 2, 1)
     ]
 
     private static let runtimePresets: [RuntimePreset] = [
-        ("7.7", "Whisky Official", SemanticVersion(7, 7, 0), nil, "https://data.getwhisky.app/Wine/Libraries.tar.gz"),
-        ("7.x", "Wine Official", nil, 7, "https://github.com/Gcenx/macOS_Wine_builds/releases"),
-        ("8.x", "Wine Official", nil, 8, "https://github.com/Gcenx/macOS_Wine_builds/releases"),
+        (
+            "7.7", "Whisky Official", SemanticVersion(7, 7, 0), nil,
+            "https://data.getwhisky.app/Wine/Libraries.tar.gz"
+        ),
+        (
+            "8.0.1", "Wine Official", SemanticVersion(8, 0, 1), nil,
+            "https://github.com/Gcenx/macOS_Wine_builds/releases/download/8.0.1/wine-stable-8.0.1-osx64.tar.xz"
+        ),
         (
             "9.21", "Wine Official", SemanticVersion(9, 21, 0), nil,
             "https://github.com/Gcenx/macOS_Wine_builds/releases/download/9.21/wine-devel-9.21-osx64.tar.xz"
@@ -92,9 +103,9 @@ struct ConfigView: View {
     @State private var runtimeLoadingState: LoadingState = .loading
     @State private var dpiSheetPresented: Bool = false
     @State private var runtimeSelection: RuntimeSelection = .builtin
-    @State private var builtinRuntimeVersions: [SemanticVersion] = []
-    @State private var selectedBuiltinRuntimeVersion: SemanticVersion = WhiskyWineDistribution.defaultWineVersion
-    @State private var pendingBuiltinRuntimeVersion: SemanticVersion = WhiskyWineDistribution.defaultWineVersion
+    @State private var builtinRuntimeOptions: [RuntimeOption] = []
+    @State private var selectedBuiltinRuntimeID: String = ""
+    @State private var pendingBuiltinRuntimeID: String = ""
     @State private var customRuntimePath: String = ""
     @State private var runtimeErrorMessage: String?
     @State private var officialRuntimeCatalog: [WhiskyWineDistribution.RuntimeCatalogEntry] = []
@@ -141,17 +152,17 @@ struct ConfigView: View {
                 if runtimeSelection == .builtin {
                     SettingItemView(title: "Runtime Version", loadingState: runtimeLoadingState) {
                         HStack {
-                            Picker("Runtime Version", selection: $pendingBuiltinRuntimeVersion) {
-                                ForEach(builtinRuntimeVersions, id: \.self) { version in
-                                    Text(runtimeDisplayName(for: version))
-                                        .tag(version)
+                            Picker("Runtime Version", selection: $pendingBuiltinRuntimeID) {
+                                ForEach(builtinRuntimeOptions, id: \.id) { option in
+                                    Text(runtimeDisplayName(for: option))
+                                        .tag(option.id)
                                 }
                             }
 
                             Button("Apply") {
                                 applyBuiltinRuntime(version: pendingBuiltinRuntimeVersion)
                             }
-                            .disabled(selectedBuiltinRuntimeVersion == pendingBuiltinRuntimeVersion)
+                            .disabled(selectedBuiltinRuntimeID == pendingBuiltinRuntimeID)
                         }
                     }
 
@@ -448,10 +459,10 @@ struct ConfigView: View {
         runtimeErrorMessage = nil
 
         var available = WhiskyWineInstaller.availableBuiltinWineVersions()
-            .filter { !Self.hiddenBuiltinVersions.contains($0) }
+            .filter { !Self.excludedRuntimeVersions.contains($0) }
         for preset in Self.runtimePresets {
             guard let presetVersion = resolvedPresetVersion(for: preset) else { continue }
-            guard !Self.hiddenBuiltinVersions.contains(presetVersion) else { continue }
+            guard !Self.excludedRuntimeVersions.contains(presetVersion) else { continue }
             if !available.contains(presetVersion) {
                 available.append(presetVersion)
             }
@@ -460,13 +471,15 @@ struct ConfigView: View {
            !available.contains(runtimeVersion) {
             available.insert(runtimeVersion, at: 0)
         }
-        builtinRuntimeVersions = available
+        builtinRuntimeOptions = buildRuntimeOptions(from: available)
 
         switch bottle.settings.wineRuntime {
         case .builtin(let version):
             runtimeSelection = .builtin
-            selectedBuiltinRuntimeVersion = version
-            pendingBuiltinRuntimeVersion = version
+            let selectedOption = builtinRuntimeOptions.first(where: { $0.version == version })
+                ?? builtinRuntimeOptions.first
+            selectedBuiltinRuntimeID = selectedOption?.id ?? ""
+            pendingBuiltinRuntimeID = selectedBuiltinRuntimeID
         case .custom(let path):
             runtimeSelection = .custom
             customRuntimePath = path
@@ -489,24 +502,17 @@ struct ConfigView: View {
         officialRuntimeCatalog.first(where: { $0.version == version })
     }
 
-    func runtimeDisplayName(for version: SemanticVersion) -> String {
-        if let preset = preset(for: version) {
-            let resolvedVersion = resolvedPresetVersion(for: preset) ?? version
-            let text = "\(resolvedVersion.major).\(resolvedVersion.minor).\(resolvedVersion.patch)"
-            let installSuffix = isBuiltinRuntimeInstalled(version) ? "" : " [Not installed]"
-            return "\(text) (\(preset.source))\(installSuffix)"
-        }
-
+    private func runtimeDisplayName(for option: RuntimeOption) -> String {
+        let version = option.version
         let versionString = "\(version.major).\(version.minor).\(version.patch)"
-        guard let entry = officialCatalogEntry(for: version) else {
-            let installSuffix = isBuiltinRuntimeInstalled(version) ? "" : " [Not installed]"
-            return "\(versionString)\(installSuffix)"
-        }
         let installSuffix = isBuiltinRuntimeInstalled(version) ? "" : " [Not installed]"
-        return "\(versionString) (\(entry.source.rawValue))\(installSuffix)"
+        return "\(versionString) (\(option.source))\(installSuffix)"
     }
 
     func selectedRuntimeURL(for version: SemanticVersion) -> URL? {
+        if let option = builtinRuntimeOptions.first(where: { $0.version == version }) {
+            return option.url
+        }
         if let preset = preset(for: version) {
             return resolvedPresetURL(for: preset)
         }
@@ -514,10 +520,32 @@ struct ConfigView: View {
     }
 
     func selectedRuntimeSource(for version: SemanticVersion) -> String {
+        if selectedBuiltinRuntimeVersion == version,
+           let selectedOption = builtinRuntimeOptions.first(where: { $0.id == selectedBuiltinRuntimeID }) {
+            return selectedOption.source
+        }
+
+        if let option = builtinRuntimeOptions.first(where: { $0.version == version }) {
+            return option.source
+        }
         if let preset = preset(for: version) {
             return preset.source
         }
         return officialCatalogEntry(for: version)?.source.rawValue ?? "Unknown"
+    }
+
+    var selectedBuiltinRuntimeVersion: SemanticVersion {
+        builtinRuntimeOptions.first(where: { $0.id == selectedBuiltinRuntimeID })?.version
+            ?? WhiskyWineDistribution.defaultWineVersion
+    }
+
+    var pendingBuiltinRuntimeVersion: SemanticVersion {
+        builtinRuntimeOptions.first(where: { $0.id == pendingBuiltinRuntimeID })?.version
+            ?? selectedBuiltinRuntimeVersion
+    }
+
+    var pendingBuiltinRuntimeURL: URL? {
+        builtinRuntimeOptions.first(where: { $0.id == pendingBuiltinRuntimeID })?.url
     }
 
     func isBuiltinRuntimeInstalled(_ version: SemanticVersion) -> Bool {
@@ -559,6 +587,37 @@ struct ConfigView: View {
         return preset.url
     }
 
+    private func buildRuntimeOptions(from versions: [SemanticVersion]) -> [RuntimeOption] {
+        var options: [RuntimeOption] = []
+
+        for preset in Self.runtimePresets {
+            guard let version = resolvedPresetVersion(for: preset), versions.contains(version) else { continue }
+            options.append(
+                RuntimeOption(
+                    id: "preset:\(preset.source):\(preset.label)",
+                    version: version,
+                    source: preset.source,
+                    url: resolvedPresetURL(for: preset)
+                )
+            )
+        }
+
+        let knownVersions = Set(options.map(\.version))
+        let unknownVersions = versions.filter { !knownVersions.contains($0) }.sorted(by: >)
+        for version in unknownVersions {
+            options.append(
+                RuntimeOption(
+                    id: "version:\(version.major).\(version.minor).\(version.patch)",
+                    version: version,
+                    source: officialCatalogEntry(for: version)?.source.rawValue ?? "Installed",
+                    url: officialCatalogEntry(for: version)?.url
+                )
+            )
+        }
+
+        return options
+    }
+
     var activeRuntimeSummary: String {
         switch bottle.settings.wineRuntime {
         case .builtin(let version):
@@ -596,8 +655,12 @@ struct ConfigView: View {
                             onInstallCompleted: {
                                 if let runtimeInstallTargetVersion {
                                     bottle.settings.wineRuntime = .builtin(version: runtimeInstallTargetVersion)
-                                    selectedBuiltinRuntimeVersion = runtimeInstallTargetVersion
-                                    pendingBuiltinRuntimeVersion = runtimeInstallTargetVersion
+                                    if let selectedOption = builtinRuntimeOptions.first(
+                                        where: { $0.version == runtimeInstallTargetVersion }
+                                    ) {
+                                        selectedBuiltinRuntimeID = selectedOption.id
+                                        pendingBuiltinRuntimeID = selectedOption.id
+                                    }
                                     runtimeErrorMessage = nil
                                     runtimeLoadingState = .success
                                     loadRuntimeConfiguration()
@@ -618,7 +681,7 @@ struct ConfigView: View {
     }
 
     func startRuntimeInstall(version: SemanticVersion) {
-        guard let selectedURL = selectedRuntimeURL(for: version) else {
+        guard let selectedURL = pendingBuiltinRuntimeURL ?? selectedRuntimeURL(for: version) else {
             runtimeErrorMessage = "No download URL is available for this runtime."
             runtimeLoadingState = .success
             return
@@ -649,8 +712,7 @@ struct ConfigView: View {
         }
 
         bottle.settings.wineRuntime = .builtin(version: version)
-        selectedBuiltinRuntimeVersion = version
-        pendingBuiltinRuntimeVersion = version
+        selectedBuiltinRuntimeID = pendingBuiltinRuntimeID
         runtimeLoadingState = .success
         refreshDetectedBottleRuntimeVersion()
     }

@@ -27,6 +27,8 @@ struct WhiskyWineDownloadView: View {
     @State private var downloadTask: URLSessionDownloadTask?
     @State private var observation: NSKeyValueObservation?
     @State private var startTime: Date?
+    @State private var downloadFailed: Bool = false
+    @State private var downloadErrorMessage: String?
     @Binding var tarLocation: URL
     @Binding var path: [SetupStage]
     var runtimeArchiveURL: URL = WhiskyWineDistribution.runtimeArchiveURL
@@ -41,7 +43,20 @@ struct WhiskyWineDownloadView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 VStack {
-                    ProgressView(value: fractionProgress, total: 1)
+                    if downloadFailed {
+                        Image(systemName: "xmark.circle")
+                            .resizable()
+                            .frame(width: 48, height: 48)
+                            .foregroundStyle(.red)
+                        if let downloadErrorMessage {
+                            Text(downloadErrorMessage)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                    } else {
+                        ProgressView(value: fractionProgress, total: 1)
+                    }
                     HStack {
                         HStack {
                             Text(String(format: String(localized: "setup.whiskywine.progress"),
@@ -84,19 +99,41 @@ struct WhiskyWineDownloadView: View {
                             proceed()
                         }
                     } catch {
-                        print("Failed to load local runtime archive: \(error)")
+                        await MainActor.run {
+                            downloadFailed = true
+                            downloadErrorMessage = "Failed to load local runtime archive."
+                        }
                     }
 
                     return
                 }
 
                 let session = URLSession(configuration: .ephemeral)
-                downloadTask = session.downloadTask(with: runtimeArchiveURL) { url, _, _ in
+                downloadTask = session.downloadTask(with: runtimeArchiveURL) { url, _, error in
                     Task.detached {
                         await MainActor.run {
-                            if let url = url {
-                                tarLocation = url
+                            if let error {
+                                downloadFailed = true
+                                downloadErrorMessage = "Runtime download failed: \(error.localizedDescription)"
+                                return
+                            }
+
+                            guard let url = url else {
+                                downloadFailed = true
+                                downloadErrorMessage = "Runtime download failed."
+                                return
+                            }
+
+                            do {
+                                let stableArchive = try copyDownloadedArchiveToTemporaryFile(
+                                    from: url,
+                                    originalURL: runtimeArchiveURL
+                                )
+                                tarLocation = stableArchive
                                 proceed()
+                            } catch {
+                                downloadFailed = true
+                                downloadErrorMessage = "Failed to prepare runtime archive."
                             }
                         }
                     }
@@ -107,11 +144,13 @@ struct WhiskyWineDownloadView: View {
                             let currentTime = Date()
                             let elapsedTime = currentTime.timeIntervalSince(startTime ?? currentTime)
                             if completedBytes > 0 {
-                                downloadSpeed = Double(completedBytes) / elapsedTime
+                                let safeElapsedTime = max(elapsedTime, 0.001)
+                                downloadSpeed = Double(completedBytes) / safeElapsedTime
                             }
                             totalBytes = task.countOfBytesExpectedToReceive
                             completedBytes = task.countOfBytesReceived
-                            fractionProgress = Double(completedBytes) / Double(totalBytes)
+                            let total = max(totalBytes, 1)
+                            fractionProgress = min(max(Double(completedBytes) / Double(total), 0), 1)
                         }
                     }
                 }
@@ -130,20 +169,26 @@ struct WhiskyWineDownloadView: View {
 
     func shouldShowEstimate() -> Bool {
         let elapsedTime = Date().timeIntervalSince(startTime ?? Date())
-        return Int(elapsedTime.rounded()) > 5 && completedBytes != 0
+        return Int(elapsedTime.rounded()) > 5
+            && completedBytes > 0
+            && downloadSpeed > 0
+            && downloadSpeed.isFinite
     }
 
     func formatRemainingTime(remainingBytes: Int64) -> String {
+        guard shouldShowEstimate(), remainingBytes > 0 else {
+            return ""
+        }
+
         let remainingTimeInSeconds = Double(remainingBytes) / downloadSpeed
+        guard remainingTimeInSeconds.isFinite, remainingTimeInSeconds > 0 else {
+            return ""
+        }
 
         let formatter = DateComponentsFormatter()
         formatter.allowedUnits = [.hour, .minute, .second]
         formatter.unitsStyle = .full
-        if shouldShowEstimate() {
-            return formatter.string(from: TimeInterval(remainingTimeInSeconds)) ?? ""
-        } else {
-            return ""
-        }
+        return formatter.string(from: TimeInterval(remainingTimeInSeconds)) ?? ""
     }
 
     func proceed() {
@@ -152,8 +197,7 @@ struct WhiskyWineDownloadView: View {
 
     func copyLocalRuntimeArchiveToTemporaryFile(from sourceURL: URL) throws -> URL {
         let fileManager = FileManager.default
-        let destinationURL = fileManager.temporaryDirectory.appending(path: UUID().uuidString)
-            .appendingPathExtension("tar.gz")
+        let destinationURL = buildTemporaryArchiveURL(using: sourceURL)
 
         if fileManager.fileExists(atPath: destinationURL.path(percentEncoded: false)) {
             try fileManager.removeItem(at: destinationURL)
@@ -161,5 +205,31 @@ struct WhiskyWineDownloadView: View {
 
         try fileManager.copyItem(at: sourceURL, to: destinationURL)
         return destinationURL
+    }
+
+    func copyDownloadedArchiveToTemporaryFile(from sourceURL: URL, originalURL: URL) throws -> URL {
+        let fileManager = FileManager.default
+        let destinationURL = buildTemporaryArchiveURL(using: originalURL)
+
+        if fileManager.fileExists(atPath: destinationURL.path(percentEncoded: false)) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+
+        try fileManager.moveItem(at: sourceURL, to: destinationURL)
+        return destinationURL
+    }
+
+    func buildTemporaryArchiveURL(using sourceURL: URL) -> URL {
+        let fileManager = FileManager.default
+        let lowerPath = sourceURL.lastPathComponent.lowercased()
+        let extensionString: String
+        if lowerPath.hasSuffix(".tar.xz") {
+            extensionString = "tar.xz"
+        } else {
+            extensionString = "tar.gz"
+        }
+        return fileManager.temporaryDirectory
+            .appending(path: UUID().uuidString)
+            .appendingPathExtension(extensionString)
     }
 }

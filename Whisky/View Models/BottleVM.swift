@@ -43,46 +43,51 @@ final class BottleVM: ObservableObject, @unchecked Sendable {
         wineRuntime: BottleWineRuntime,
         runtimeDownloadURL: URL?,
         bottleURL: URL
-    ) -> URL {
+    ) async -> URL? {
         let newBottleDir = bottleURL.appending(path: UUID().uuidString)
 
-        Task {
-            var bottleId: Bottle?
-            do {
-                try await Self.ensureRuntimeInstalled(runtime: wineRuntime, downloadURL: runtimeDownloadURL)
+        var bottleId: Bottle?
+        do {
+            try await Self.ensureRuntimeInstalled(runtime: wineRuntime, downloadURL: runtimeDownloadURL)
 
-                try FileManager.default.createDirectory(atPath: newBottleDir.path(percentEncoded: false),
-                                                        withIntermediateDirectories: true)
-                let bottle = Bottle(bottleUrl: newBottleDir, inFlight: true)
-                bottleId = bottle
+            try FileManager.default.createDirectory(atPath: newBottleDir.path(percentEncoded: false),
+                                                    withIntermediateDirectories: true)
+            let bottle = Bottle(bottleUrl: newBottleDir, inFlight: true)
+            bottleId = bottle
 
+            await MainActor.run {
+                self.bottles.append(bottle)
+            }
+
+            bottle.settings.windowsVersion = winVersion
+            bottle.settings.name = bottleName
+            bottle.settings.wineRuntime = wineRuntime
+            try await Wine.changeWinVersion(bottle: bottle, win: winVersion)
+            let wineVer = try await Wine.wineVersion(bottle: bottle)
+            bottle.settings.wineVersion = SemanticVersion(wineVer) ?? SemanticVersion(0, 0, 0)
+            // Add record
+            await MainActor.run {
+                self.bottlesList.paths.append(newBottleDir)
+                self.loadBottles()
+            }
+
+            return newBottleDir
+        } catch {
+            print("Failed to create new bottle: \(error)")
+            if let bottle = bottleId {
                 await MainActor.run {
-                    self.bottles.append(bottle)
-                }
-
-                bottle.settings.windowsVersion = winVersion
-                bottle.settings.name = bottleName
-                bottle.settings.wineRuntime = wineRuntime
-                try await Wine.changeWinVersion(bottle: bottle, win: winVersion)
-                let wineVer = try await Wine.wineVersion(bottle: bottle)
-                bottle.settings.wineVersion = SemanticVersion(wineVer) ?? SemanticVersion(0, 0, 0)
-                // Add record
-                await MainActor.run {
-                    self.bottlesList.paths.append(newBottleDir)
-                    self.loadBottles()
-                }
-            } catch {
-                print("Failed to create new bottle: \(error)")
-                if let bottle = bottleId {
-                    await MainActor.run {
-                        if let index = self.bottles.firstIndex(of: bottle) {
-                            self.bottles.remove(at: index)
-                        }
+                    if let index = self.bottles.firstIndex(of: bottle) {
+                        self.bottles.remove(at: index)
                     }
                 }
             }
+
+            if FileManager.default.fileExists(atPath: newBottleDir.path(percentEncoded: false)) {
+                try? FileManager.default.removeItem(at: newBottleDir)
+            }
+
+            return nil
         }
-        return newBottleDir
     }
 
     private static func ensureRuntimeInstalled(runtime: BottleWineRuntime, downloadURL: URL?) async throws {

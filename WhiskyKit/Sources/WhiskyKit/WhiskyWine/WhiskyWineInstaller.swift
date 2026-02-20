@@ -238,7 +238,6 @@ public class WhiskyWineInstaller {
 
     public static func availableBuiltinWineVersions() -> [SemanticVersion] {
         var versions = Set<SemanticVersion>()
-        versions.insert(WhiskyWineDistribution.defaultWineVersion)
 
         if let installedVersion = whiskyWineVersion() {
             versions.insert(installedVersion)

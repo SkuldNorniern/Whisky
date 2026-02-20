@@ -28,17 +28,24 @@ private struct CreateRuntimePreset: Hashable {
     let url: URL
 }
 
+private struct CreateRuntimeOption: Hashable {
+    let id: String
+    let version: SemanticVersion
+    let source: String
+    let url: URL?
+}
+
+// swiftlint:disable type_body_length
 struct BottleCreationView: View {
-    private static let removedRuntimeVersions: Set<SemanticVersion> = [
-        SemanticVersion(9, 0, 0),
+    private static let excludedRuntimeVersions: Set<SemanticVersion> = [
         SemanticVersion(11, 2, 1)
     ]
 
     private static let runtimePresets: [CreateRuntimePreset] = [
         ("7.7", "Whisky Official", SemanticVersion(7, 7, 0), nil,
          "https://data.getwhisky.app/Wine/Libraries.tar.gz"),
-        ("7.x", "Wine Official", nil, 7, "https://github.com/Gcenx/macOS_Wine_builds/releases"),
-        ("8.x", "Wine Official", nil, 8, "https://github.com/Gcenx/macOS_Wine_builds/releases"),
+        ("8.0.1", "Wine Official", SemanticVersion(8, 0, 1), nil,
+         "https://github.com/Gcenx/macOS_Wine_builds/releases/download/8.0.1/wine-stable-8.0.1-osx64.tar.xz"),
         ("9.21", "Wine Official", SemanticVersion(9, 21, 0), nil,
          "https://github.com/Gcenx/macOS_Wine_builds/releases/download/9.21/wine-devel-9.21-osx64.tar.xz"),
         ("11.2", "Wine Official", SemanticVersion(11, 2, 0), nil,
@@ -61,8 +68,11 @@ struct BottleCreationView: View {
     @State private var newBottleURL: URL = UserDefaults.standard.url(forKey: "defaultBottleLocation")
                                            ?? BottleData.defaultBottleDir
     @State private var nameValid: Bool = false
-    @State private var builtinRuntimeVersions: [SemanticVersion] = []
-    @State private var selectedBuiltinRuntimeVersion: SemanticVersion = SemanticVersion(7, 7, 0)
+    @State private var creatingBottle: Bool = false
+    @State private var creatingStatusMessage: String?
+    @State private var createErrorMessage: String?
+    @State private var builtinRuntimeOptions: [CreateRuntimeOption] = []
+    @State private var selectedBuiltinRuntimeID: String = ""
     @State private var officialRuntimeCatalog: [WhiskyWineDistribution.RuntimeCatalogEntry] = []
 
     @Environment(\.dismiss) private var dismiss
@@ -81,26 +91,35 @@ struct BottleCreationView: View {
                     }
                 }
 
-                Picker("Wine Runtime", selection: $selectedBuiltinRuntimeVersion) {
-                    ForEach(builtinRuntimeVersions, id: \.self) { version in
-                        Text(runtimeDisplayName(for: version)).tag(version)
+                Picker("Wine Runtime", selection: $selectedBuiltinRuntimeID) {
+                    ForEach(builtinRuntimeOptions, id: \.id) { option in
+                        Text(runtimeDisplayName(for: option)).tag(option.id)
                     }
                 }
 
                 HStack {
                     Text("Runtime Source")
                     Spacer()
-                    Text(selectedRuntimeSource(for: selectedBuiltinRuntimeVersion))
+                    Text(selectedBuiltinRuntimeSource)
                         .foregroundStyle(.secondary)
                 }
 
-                if let selectedURL = selectedRuntimeURL(for: selectedBuiltinRuntimeVersion) {
+                if let selectedURL = selectedBuiltinRuntimeURL {
                     HStack {
                         Text("Selected URL")
                         Spacer()
                         Link(selectedURL.absoluteString, destination: selectedURL)
                             .lineLimit(1)
                             .truncationMode(.middle)
+                    }
+                }
+
+                if creatingBottle {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(creatingStatusMessage ?? "Creating bottle...")
+                            .foregroundStyle(.secondary)
                     }
                 }
 
@@ -136,7 +155,7 @@ struct BottleCreationView: View {
                         submit()
                     }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(!nameValid)
+                    .disabled(!nameValid || creatingBottle)
                 }
             }
             .onSubmit {
@@ -149,39 +168,74 @@ struct BottleCreationView: View {
         }
         .fixedSize(horizontal: false, vertical: true)
         .frame(width: ViewWidth.small)
+        .alert("Create Bottle Failed", isPresented: Binding(
+            get: { createErrorMessage != nil },
+            set: { isPresented in
+                if !isPresented {
+                    createErrorMessage = nil
+                }
+            }
+        )) {
+            Button("OK") {
+                createErrorMessage = nil
+            }
+        } message: {
+            Text(createErrorMessage ?? "Unknown error")
+        }
     }
 
     func submit() {
+        guard !creatingBottle else { return }
+        creatingBottle = true
+        if !WhiskyWineInstaller.isBuiltinVersionInstalled(selectedBuiltinRuntimeVersion) {
+            creatingStatusMessage = "Installing selected runtime..."
+        } else {
+            creatingStatusMessage = "Creating bottle..."
+        }
+
         let runtime = BottleWineRuntime.builtin(version: selectedBuiltinRuntimeVersion)
-        newlyCreatedBottleURL = BottleVM.shared.createNewBottle(bottleName: newBottleName,
-                                                                 winVersion: newBottleVersion,
-                                                                 wineRuntime: runtime,
-                                                                 runtimeDownloadURL: selectedRuntimeURL(
-                                                                    for: selectedBuiltinRuntimeVersion
-                                                                 ),
-                                                                 bottleURL: newBottleURL)
-        dismiss()
+        Task {
+            let createdURL = await BottleVM.shared.createNewBottle(
+                bottleName: newBottleName,
+                winVersion: newBottleVersion,
+                wineRuntime: runtime,
+                runtimeDownloadURL: selectedBuiltinRuntimeURL,
+                bottleURL: newBottleURL
+            )
+
+            await MainActor.run {
+                creatingBottle = false
+                creatingStatusMessage = nil
+                if let createdURL {
+                    newlyCreatedBottleURL = createdURL
+                    dismiss()
+                } else {
+                    createErrorMessage = "Failed to create bottle. Runtime install or initialization failed."
+                }
+            }
+        }
     }
 
     func loadRuntimeConfiguration() {
         var available = WhiskyWineInstaller.availableBuiltinWineVersions()
-            .filter { !Self.removedRuntimeVersions.contains($0) }
+            .filter { !Self.excludedRuntimeVersions.contains($0) }
 
         for preset in Self.runtimePresets {
-            guard let presetVersion = resolvedPresetVersion(for: preset),
-                  !Self.removedRuntimeVersions.contains(presetVersion) else { continue }
+            guard let presetVersion = resolvedPresetVersion(for: preset) else { continue }
+            guard !Self.excludedRuntimeVersions.contains(presetVersion) else { continue }
             if !available.contains(presetVersion) {
                 available.append(presetVersion)
             }
         }
 
-        builtinRuntimeVersions = available.sorted(by: >)
+        builtinRuntimeOptions = buildRuntimeOptions(from: available)
 
-        let defaultVersion = SemanticVersion(7, 7, 0)
-        if builtinRuntimeVersions.contains(defaultVersion) {
-            selectedBuiltinRuntimeVersion = defaultVersion
-        } else if let first = builtinRuntimeVersions.first {
-            selectedBuiltinRuntimeVersion = first
+        if let whiskyDefault = builtinRuntimeOptions.first(where: {
+            $0.version == SemanticVersion(7, 7, 0) && $0.source == "Whisky Official"
+        }) {
+            selectedBuiltinRuntimeID = whiskyDefault.id
+        } else if let first = builtinRuntimeOptions.first {
+            selectedBuiltinRuntimeID = first.id
         }
     }
 
@@ -195,32 +249,23 @@ struct BottleCreationView: View {
         }
     }
 
-    func runtimeDisplayName(for version: SemanticVersion) -> String {
-        if let preset = preset(for: version) {
-            let resolvedVersion = resolvedPresetVersion(for: preset) ?? version
-            return "\(resolvedVersion.major).\(resolvedVersion.minor).\(resolvedVersion.patch) (\(preset.source))"
-        }
-
-        let versionString = "\(version.major).\(version.minor).\(version.patch)"
-        let source = officialCatalogEntry(for: version)?.source.rawValue
-        if let source {
-            return "\(versionString) (\(source))"
-        }
-        return versionString
+    private func runtimeDisplayName(for option: CreateRuntimeOption) -> String {
+        let version = option.version
+        return "\(version.major).\(version.minor).\(version.patch) (\(option.source))"
     }
 
-    func selectedRuntimeSource(for version: SemanticVersion) -> String {
-        if let preset = preset(for: version) {
-            return preset.source
-        }
-        return officialCatalogEntry(for: version)?.source.rawValue ?? "Unknown"
+    var selectedBuiltinRuntimeVersion: SemanticVersion {
+        builtinRuntimeOptions.first(where: { $0.id == selectedBuiltinRuntimeID })?.version
+            ?? SemanticVersion(7, 7, 0)
     }
 
-    func selectedRuntimeURL(for version: SemanticVersion) -> URL? {
-        if let preset = preset(for: version) {
-            return resolvedPresetURL(for: preset)
-        }
-        return officialCatalogEntry(for: version)?.url
+    var selectedBuiltinRuntimeSource: String {
+        builtinRuntimeOptions.first(where: { $0.id == selectedBuiltinRuntimeID })?.source
+            ?? "Unknown"
+    }
+
+    var selectedBuiltinRuntimeURL: URL? {
+        builtinRuntimeOptions.first(where: { $0.id == selectedBuiltinRuntimeID })?.url
     }
 
     func officialCatalogEntry(for version: SemanticVersion) -> WhiskyWineDistribution.RuntimeCatalogEntry? {
@@ -260,7 +305,39 @@ struct BottleCreationView: View {
 
         return preset.url
     }
+
+    private func buildRuntimeOptions(from versions: [SemanticVersion]) -> [CreateRuntimeOption] {
+        var options: [CreateRuntimeOption] = []
+
+        for preset in Self.runtimePresets {
+            guard let version = resolvedPresetVersion(for: preset), versions.contains(version) else { continue }
+            options.append(
+                CreateRuntimeOption(
+                    id: "preset:\(preset.source):\(preset.label)",
+                    version: version,
+                    source: preset.source,
+                    url: resolvedPresetURL(for: preset)
+                )
+            )
+        }
+
+        let knownVersions = Set(options.map(\.version))
+        let unknownVersions = versions.filter { !knownVersions.contains($0) }.sorted(by: >)
+        for version in unknownVersions {
+            options.append(
+                CreateRuntimeOption(
+                    id: "version:\(version.major).\(version.minor).\(version.patch)",
+                    version: version,
+                    source: officialCatalogEntry(for: version)?.source.rawValue ?? "Installed",
+                    url: officialCatalogEntry(for: version)?.url
+                )
+            )
+        }
+
+        return options
+    }
 }
+// swiftlint:enable type_body_length
 
 #Preview {
     BottleCreationView(newlyCreatedBottleURL: .constant(nil))
