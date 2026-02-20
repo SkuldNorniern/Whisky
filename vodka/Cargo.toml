@@ -1,0 +1,3 @@
+[workspace]
+members = ["vodka-core", "vodka-pe"]
+resolver = "2"

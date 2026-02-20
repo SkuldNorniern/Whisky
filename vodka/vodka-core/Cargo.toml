@@ -1,0 +1,11 @@
+[package]
+name = "vodka-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "vodka_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+vodka-pe = { path = "../vodka-pe" }
