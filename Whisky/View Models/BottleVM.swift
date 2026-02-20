@@ -37,12 +37,20 @@ final class BottleVM: ObservableObject, @unchecked Sendable {
         return bottles.filter { $0.isAvailable == true }.count
     }
 
-    func createNewBottle(bottleName: String, winVersion: WinVersion, bottleURL: URL) -> URL {
+    func createNewBottle(
+        bottleName: String,
+        winVersion: WinVersion,
+        wineRuntime: BottleWineRuntime,
+        runtimeDownloadURL: URL?,
+        bottleURL: URL
+    ) -> URL {
         let newBottleDir = bottleURL.appending(path: UUID().uuidString)
 
-        Task.detached {
+        Task {
             var bottleId: Bottle?
             do {
+                try await Self.ensureRuntimeInstalled(runtime: wineRuntime, downloadURL: runtimeDownloadURL)
+
                 try FileManager.default.createDirectory(atPath: newBottleDir.path(percentEncoded: false),
                                                         withIntermediateDirectories: true)
                 let bottle = Bottle(bottleUrl: newBottleDir, inFlight: true)
@@ -54,6 +62,7 @@ final class BottleVM: ObservableObject, @unchecked Sendable {
 
                 bottle.settings.windowsVersion = winVersion
                 bottle.settings.name = bottleName
+                bottle.settings.wineRuntime = wineRuntime
                 try await Wine.changeWinVersion(bottle: bottle, win: winVersion)
                 let wineVer = try await Wine.wineVersion(bottle: bottle)
                 bottle.settings.wineVersion = SemanticVersion(wineVer) ?? SemanticVersion(0, 0, 0)
@@ -74,5 +83,46 @@ final class BottleVM: ObservableObject, @unchecked Sendable {
             }
         }
         return newBottleDir
+    }
+
+    private static func ensureRuntimeInstalled(runtime: BottleWineRuntime, downloadURL: URL?) async throws {
+        guard case .builtin(let version) = runtime,
+              !WhiskyWineInstaller.isBuiltinVersionInstalled(version) else {
+            return
+        }
+
+        guard let downloadURL,
+              ["gz", "xz"].contains(downloadURL.pathExtension.lowercased()) else {
+            throw NSError(
+                domain: "BottleVM",
+                code: 1,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Selected runtime is not installed and has no archive URL"
+                ]
+            )
+        }
+
+        let archiveURL = try await downloadArchive(from: downloadURL)
+        guard await WhiskyWineInstaller.installBuiltinRuntime(version: version, from: archiveURL) else {
+            throw NSError(
+                domain: "BottleVM",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to install selected runtime"]
+            )
+        }
+    }
+
+    private static func downloadArchive(from url: URL) async throws -> URL {
+        let (downloadedURL, _) = try await URLSession.shared.download(from: url)
+        let destination = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString)
+            .appendingPathExtension(url.pathExtension)
+
+        if FileManager.default.fileExists(atPath: destination.path(percentEncoded: false)) {
+            try FileManager.default.removeItem(at: destination)
+        }
+
+        try FileManager.default.moveItem(at: downloadedURL, to: destination)
+        return destination
     }
 }
