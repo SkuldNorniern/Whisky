@@ -1,5 +1,5 @@
 //
-//  RustCoreBridge.swift
+//  VodkaBridge.swift
 //  WhiskyKit
 //
 //  This file is part of Whisky.
@@ -19,36 +19,42 @@
 import Foundation
 import Darwin
 
-enum RustCoreBridge {
+enum VodkaBridge {
     private typealias ValidatePEFileFunction = @convention(c) (UnsafePointer<CChar>?) -> Bool
-    private typealias ExtractPEHeaderFunction = @convention(c) (
+    private typealias InspectPEFunction = @convention(c) (
         UnsafePointer<CChar>?,
         UnsafeMutablePointer<UInt16>?,
         UnsafeMutablePointer<UInt16>?,
         UnsafeMutablePointer<UInt32>?
     ) -> Bool
 
-    struct RustPEHeaderMetadata: Equatable {
+    struct PEHeaderMetadata: Equatable {
         let machine: UInt16
         let subsystem: UInt16
         let entryPointRVA: UInt32
     }
 
     private static let validatePEFile: ValidatePEFileFunction? = {
-        return RustCoreLoader.resolveSymbol(
+        return VodkaLoader.resolveSymbol(
             named: ["vodka_pe_validate_file", "whisky_rust_pe_validate_file"],
             as: ValidatePEFileFunction.self
         )
     }()
 
-    private static let extractPEHeader: ExtractPEHeaderFunction? = {
-        RustCoreLoader.resolveSymbol(
-            named: ["vodka_pe_extract_header", "whisky_rust_pe_extract_header"],
-            as: ExtractPEHeaderFunction.self
+    private static let inspectPEFile: InspectPEFunction? = {
+        VodkaLoader.resolveSymbol(
+            named: ["vodka_pe_inspect", "vodka_pe_extract_header", "whisky_rust_pe_extract_header"],
+            as: InspectPEFunction.self
         )
     }()
 
     static func validatePortableExecutable(at url: URL) -> Bool? {
+        if let inspectPEFile {
+            return url.path.withCString { path in
+                inspectPEFile(path, nil, nil, nil)
+            }
+        }
+
         guard let validatePEFile else {
             return nil
         }
@@ -58,8 +64,8 @@ enum RustCoreBridge {
         }
     }
 
-    static func extractPortableExecutableMetadata(at url: URL) -> RustPEHeaderMetadata? {
-        guard let extractPEHeader else {
+    static func extractPortableExecutableMetadata(at url: URL) -> PEHeaderMetadata? {
+        guard let inspectPEFile else {
             return nil
         }
 
@@ -68,14 +74,14 @@ enum RustCoreBridge {
         var entryPointRVA: UInt32 = 0
 
         let didExtractMetadata = url.path.withCString { path in
-            extractPEHeader(path, &machine, &subsystem, &entryPointRVA)
+            inspectPEFile(path, &machine, &subsystem, &entryPointRVA)
         }
 
         guard didExtractMetadata else {
             return nil
         }
 
-        return RustPEHeaderMetadata(
+        return PEHeaderMetadata(
             machine: machine,
             subsystem: subsystem,
             entryPointRVA: entryPointRVA
@@ -83,7 +89,7 @@ enum RustCoreBridge {
     }
 }
 
-private enum RustCoreLoader {
+private enum VodkaLoader {
     private struct RustLibraryHandle: @unchecked Sendable {
         let rawValue: UnsafeMutableRawPointer
     }
@@ -120,22 +126,31 @@ private enum RustCoreLoader {
         }
 
         if let bundlePath = Bundle.main.privateFrameworksURL?
+            .appending(path: "libvodka_core.dylib")
+            .path(percentEncoded: false) {
+            paths.append(bundlePath)
+        }
+
+        if let bundlePath = Bundle.main.privateFrameworksURL?
+            .appending(path: "libvodka_pe.dylib")
+            .path(percentEncoded: false) {
+            paths.append(bundlePath)
+        }
+
+        if let bundlePath = Bundle.main.privateFrameworksURL?
             .appending(path: "libwhiskyrustcore.dylib")
             .path(percentEncoded: false) {
             paths.append(bundlePath)
         }
 
-        if let vodkaBundlePath = Bundle.main.privateFrameworksURL?
-            .appending(path: "libvodka_core.dylib")
-            .path(percentEncoded: false) {
-            paths.append(vodkaBundlePath)
-        }
-
         paths.append("libvodka_core.dylib")
+        paths.append("libvodka_pe.dylib")
         paths.append("libwhiskyrustcore.dylib")
         paths.append("/opt/homebrew/lib/libvodka_core.dylib")
+        paths.append("/opt/homebrew/lib/libvodka_pe.dylib")
         paths.append("/opt/homebrew/lib/libwhiskyrustcore.dylib")
         paths.append("/usr/local/lib/libvodka_core.dylib")
+        paths.append("/usr/local/lib/libvodka_pe.dylib")
         paths.append("/usr/local/lib/libwhiskyrustcore.dylib")
 
         return paths
