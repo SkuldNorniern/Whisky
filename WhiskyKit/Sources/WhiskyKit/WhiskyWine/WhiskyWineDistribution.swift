@@ -157,7 +157,7 @@ public enum WhiskyWineDistribution {
             let tags = try JSONDecoder().decode([WineHQTag].self, from: data)
             guard let name = tags.first?.name else { return nil }
 
-            let normalizedName = name.replacingOccurrences(of: "wine-", with: "")
+            let normalizedName = normalizedVersionTag(from: name)
             guard let version = SemanticVersion(normalizedName) else { return nil }
 
             let majorPath = "\(version.major).x"
@@ -190,9 +190,7 @@ public enum WhiskyWineDistribution {
 
             let candidates: [(version: SemanticVersion, url: URL)] = releases.compactMap { release in
                 guard !release.draft, !release.prerelease else { return nil }
-                let normalized = release.tagName
-                    .replacingOccurrences(of: "wine-", with: "")
-                    .replacingOccurrences(of: "v", with: "")
+                let normalized = normalizedVersionTag(from: release.tagName)
                 guard let version = SemanticVersion(normalized), version.major == major else { return nil }
 
                 guard let assetURL = preferredAssetURL(from: release.assets) else {
@@ -226,9 +224,7 @@ public enum WhiskyWineDistribution {
 
             let candidates: [(version: SemanticVersion, url: URL)] = releases.compactMap { release in
                 guard !release.draft, !release.prerelease else { return nil }
-                let normalized = release.tagName
-                    .replacingOccurrences(of: "wine-", with: "")
-                    .replacingOccurrences(of: "v", with: "")
+                let normalized = normalizedVersionTag(from: release.tagName)
                 guard let version = SemanticVersion(normalized) else { return nil }
                 guard let assetURL = preferredAssetURL(from: release.assets) else { return nil }
                 return (version, assetURL)
@@ -285,5 +281,10 @@ public enum WhiskyWineDistribution {
                 continuation.resume(returning: data)
             }.resume()
         }
+    }
+
+    private static func normalizedVersionTag(from value: String) -> String {
+        VodkaBridge.normalizeWineTag(value)
+            ?? value.replacingOccurrences(of: "wine-", with: "").replacingOccurrences(of: "v", with: "")
     }
 }

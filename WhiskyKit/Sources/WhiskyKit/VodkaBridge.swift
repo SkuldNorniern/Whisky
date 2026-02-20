@@ -27,6 +27,8 @@ enum VodkaBridge {
         UnsafeMutablePointer<UInt16>?,
         UnsafeMutablePointer<UInt32>?
     ) -> Bool
+    private typealias NormalizeWineTagFunction = @convention(c) (UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
+    private typealias FreeCStringFunction = @convention(c) (UnsafeMutablePointer<CChar>?) -> Void
 
     struct PEHeaderMetadata: Equatable {
         let machine: UInt16
@@ -45,6 +47,20 @@ enum VodkaBridge {
         VodkaLoader.resolveSymbol(
             named: ["vodka_pe_inspect", "vodka_pe_extract_header", "whisky_rust_pe_extract_header"],
             as: InspectPEFunction.self
+        )
+    }()
+
+    private static let normalizeWineTag: NormalizeWineTagFunction? = {
+        VodkaLoader.resolveSymbol(
+            named: ["vodka_runtime_normalize_wine_tag"],
+            as: NormalizeWineTagFunction.self
+        )
+    }()
+
+    private static let freeCString: FreeCStringFunction? = {
+        VodkaLoader.resolveSymbol(
+            named: ["vodka_runtime_free_cstring"],
+            as: FreeCStringFunction.self
         )
     }()
 
@@ -86,6 +102,24 @@ enum VodkaBridge {
             subsystem: subsystem,
             entryPointRVA: entryPointRVA
         )
+    }
+
+    static func normalizeWineTag(_ value: String) -> String? {
+        guard let normalizeWineTag else {
+            return nil
+        }
+
+        return value.withCString { cString in
+            guard let resultPointer = normalizeWineTag(cString) else {
+                return nil
+            }
+
+            defer {
+                freeCString?(resultPointer)
+            }
+
+            return String(cString: resultPointer)
+        }
     }
 }
 

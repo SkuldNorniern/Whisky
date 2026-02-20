@@ -9,3 +9,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 vodka-pe = { path = "../vodka-pe" }
+vodka-runtime = { path = "../vodka-runtime" }

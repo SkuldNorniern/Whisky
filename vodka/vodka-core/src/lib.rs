@@ -1,4 +1,5 @@
 use std::ffi::CStr;
+use std::ffi::CString;
 use std::os::raw::c_char;
 use std::path::PathBuf;
 use std::ptr;
@@ -15,6 +16,18 @@ fn c_path_to_path(path: *const c_char) -> Option<PathBuf> {
 fn inspect_path(path: *const c_char) -> Option<(u16, u16, u32)> {
     let path = c_path_to_path(path)?;
     vodka_pe::inspect_pe_path(&path)
+}
+
+fn normalize_tag_ptr(tag: *const c_char) -> Option<CString> {
+    if tag.is_null() {
+        return None;
+    }
+
+    let input = unsafe { CStr::from_ptr(tag) }
+        .to_string_lossy()
+        .into_owned();
+    let normalized = vodka_runtime::normalize_wine_tag(&input)?;
+    CString::new(normalized).ok()
 }
 
 #[no_mangle]
@@ -72,4 +85,25 @@ pub extern "C" fn whisky_rust_pe_extract_header(
     entry_point_rva: *mut u32,
 ) -> bool {
     vodka_pe_extract_header(path, machine, subsystem, entry_point_rva)
+}
+
+#[no_mangle]
+pub extern "C" fn vodka_runtime_normalize_wine_tag(tag: *const c_char) -> *mut c_char {
+    let result = std::panic::catch_unwind(|| normalize_tag_ptr(tag));
+    let Some(cstring) = result.ok().flatten() else {
+        return ptr::null_mut();
+    };
+
+    cstring.into_raw()
+}
+
+#[no_mangle]
+pub extern "C" fn vodka_runtime_free_cstring(ptr_value: *mut c_char) {
+    if ptr_value.is_null() {
+        return;
+    }
+
+    unsafe {
+        let _ = CString::from_raw(ptr_value);
+    }
 }
