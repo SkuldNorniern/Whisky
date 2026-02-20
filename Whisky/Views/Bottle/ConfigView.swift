@@ -18,6 +18,8 @@
 
 import SwiftUI
 import WhiskyKit
+import SemanticVersion
+import AppKit
 
 // swiftlint:disable file_length type_body_length
 
@@ -26,6 +28,43 @@ enum LoadingState {
     case modifying
     case success
     case failed
+}
+
+enum RuntimeSelection: String, CaseIterable {
+    case builtin
+    case custom
+
+    var title: String {
+        switch self {
+        case .builtin:
+            return "Built-in"
+        case .custom:
+            return "Custom"
+        }
+    }
+}
+
+private struct RuntimePreset: Hashable {
+    let label: String
+    let source: String
+    let selectionVersion: SemanticVersion?
+    let majorTrack: Int?
+    let url: URL
+}
+
+private let runtimePresets: [RuntimePreset] = [
+    ("7.7", "Whisky Official", SemanticVersion(7, 7, 0), nil, "https://data.getwhisky.app/Wine/Libraries.tar.gz"),
+    ("7.x", "Wine Official", nil, 7, "https://github.com/Gcenx/macOS_Wine_builds/releases"),
+    ("8.x", "Wine Official", nil, 8, "https://github.com/Gcenx/macOS_Wine_builds/releases"),
+    ("9.22", "Wine Official", SemanticVersion(9, 22, 0), nil, "https://dl.winehq.org/wine/source/9.x/wine-9.22.tar.xz"),
+    ("11.2", "Wine Official", SemanticVersion(11, 2, 0), nil, "https://dl.winehq.org/wine/source/11.x/wine-11.2.tar.xz")
+].compactMap { label, source, version, majorTrack, urlString in
+    guard let url = URL(string: urlString) else { return nil }
+    return RuntimePreset(label: label,
+                         source: source,
+                         selectionVersion: version,
+                         majorTrack: majorTrack,
+                         url: url)
 }
 
 struct ConfigView: View {
@@ -39,7 +78,15 @@ struct ConfigView: View {
     @State private var buildVersionLoadingState: LoadingState = .loading
     @State private var retinaModeLoadingState: LoadingState = .loading
     @State private var dpiConfigLoadingState: LoadingState = .loading
+    @State private var runtimeLoadingState: LoadingState = .loading
     @State private var dpiSheetPresented: Bool = false
+    @State private var runtimeSelection: RuntimeSelection = .builtin
+    @State private var builtinRuntimeVersions: [SemanticVersion] = []
+    @State private var selectedBuiltinRuntimeVersion: SemanticVersion = WhiskyWineDistribution.defaultWineVersion
+    @State private var pendingBuiltinRuntimeVersion: SemanticVersion = WhiskyWineDistribution.defaultWineVersion
+    @State private var customRuntimePath: String = ""
+    @State private var runtimeErrorMessage: String?
+    @State private var officialRuntimeCatalog: [WhiskyWineDistribution.RuntimeCatalogEntry] = []
     @AppStorage("wineSectionExpanded") private var wineSectionExpanded: Bool = true
     @AppStorage("dxvkSectionExpanded") private var dxvkSectionExpanded: Bool = true
     @AppStorage("metalSectionExpanded") private var metalSectionExpanded: Bool = true
@@ -55,6 +102,85 @@ struct ConfigView: View {
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
+                SettingItemView(title: "Runtime Type", loadingState: runtimeLoadingState) {
+                    Picker("Runtime Type", selection: $runtimeSelection) {
+                        ForEach(RuntimeSelection.allCases, id: \.self) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
+                    .onChange(of: runtimeSelection) { _, newValue in
+                        guard runtimeLoadingState == .success else { return }
+                        switch newValue {
+                        case .builtin:
+                            let targetVersion = selectedBuiltinRuntimeVersion
+                            applyBuiltinRuntime(version: targetVersion)
+                        case .custom:
+                            if !customRuntimePath.isEmpty {
+                                applyCustomRuntime(path: customRuntimePath)
+                            }
+                        }
+                    }
+                }
+
+                if runtimeSelection == .builtin {
+                    SettingItemView(title: "Runtime Version", loadingState: runtimeLoadingState) {
+                        HStack {
+                            Picker("Runtime Version", selection: $pendingBuiltinRuntimeVersion) {
+                                ForEach(builtinRuntimeVersions, id: \.self) { version in
+                                    Text(runtimeDisplayName(for: version))
+                                        .tag(version)
+                                }
+                            }
+
+                            Button("Apply") {
+                                applyBuiltinRuntime(version: pendingBuiltinRuntimeVersion)
+                            }
+                            .disabled(selectedBuiltinRuntimeVersion == pendingBuiltinRuntimeVersion)
+                        }
+                    }
+
+                    HStack {
+                        Text("Runtime Source")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(selectedRuntimeSource(for: pendingBuiltinRuntimeVersion))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let selectedURL = selectedRuntimeURL(for: pendingBuiltinRuntimeVersion) {
+                        HStack {
+                            Text("Selected URL")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Link(selectedURL.absoluteString, destination: selectedURL)
+                                .font(.caption)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                } else {
+                    SettingItemView(title: "Custom Runtime", loadingState: runtimeLoadingState) {
+                        HStack {
+                            Text(customRuntimePath.isEmpty ? "Not set" : customRuntimePath)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .foregroundStyle(customRuntimePath.isEmpty ? .secondary : .primary)
+                            Button("Browse") {
+                                openCustomRuntimePicker()
+                            }
+                        }
+                    }
+                    if let runtimeErrorMessage {
+                        Text(runtimeErrorMessage)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+
+                officialRuntimeSourcesView
                 SettingItemView(title: "config.winVersion", loadingState: winVersionLoadingState) {
                     Picker("config.winVersion", selection: $bottle.settings.windowsVersion) {
                         ForEach(WinVersion.allCases.reversed(), id: \.self) {
@@ -225,6 +351,8 @@ struct ConfigView: View {
         .onAppear {
             winVersionLoadingState = .success
             refreshDetectedBottleRuntimeVersion()
+            loadRuntimeConfiguration()
+            loadOfficialRuntimeCatalog()
 
             loadBuildName()
 
@@ -310,6 +438,188 @@ struct ConfigView: View {
                     detectedBottleRuntimeVersion = "Unavailable"
                 }
             }
+        }
+    }
+
+    func loadRuntimeConfiguration() {
+        runtimeLoadingState = .modifying
+        runtimeErrorMessage = nil
+
+        var available = WhiskyWineInstaller.availableBuiltinWineVersions()
+        for preset in runtimePresets {
+            guard let presetVersion = resolvedPresetVersion(for: preset) else { continue }
+            if !available.contains(presetVersion) {
+                available.append(presetVersion)
+            }
+        }
+        if case .builtin(let runtimeVersion) = bottle.settings.wineRuntime,
+           !available.contains(runtimeVersion) {
+            available.insert(runtimeVersion, at: 0)
+        }
+        builtinRuntimeVersions = available
+
+        switch bottle.settings.wineRuntime {
+        case .builtin(let version):
+            runtimeSelection = .builtin
+            selectedBuiltinRuntimeVersion = version
+            pendingBuiltinRuntimeVersion = version
+        case .custom(let path):
+            runtimeSelection = .custom
+            customRuntimePath = path
+        }
+
+        runtimeLoadingState = .success
+    }
+
+    func loadOfficialRuntimeCatalog() {
+        Task(priority: .utility) {
+            let catalog = await WhiskyWineDistribution.fetchOfficialRuntimeCatalog()
+            await MainActor.run {
+                officialRuntimeCatalog = catalog
+                loadRuntimeConfiguration()
+            }
+        }
+    }
+
+    func officialCatalogEntry(for version: SemanticVersion) -> WhiskyWineDistribution.RuntimeCatalogEntry? {
+        officialRuntimeCatalog.first(where: { $0.version == version })
+    }
+
+    func runtimeDisplayName(for version: SemanticVersion) -> String {
+        if let preset = preset(for: version) {
+            return "\(preset.label) (\(preset.source))"
+        }
+
+        let versionString = "\(version.major).\(version.minor).\(version.patch)"
+        guard let entry = officialCatalogEntry(for: version) else {
+            return versionString
+        }
+        return "\(versionString) (\(entry.source.rawValue))"
+    }
+
+    func selectedRuntimeURL(for version: SemanticVersion) -> URL? {
+        if let preset = preset(for: version) {
+            return resolvedPresetURL(for: preset)
+        }
+        return officialCatalogEntry(for: version)?.url
+    }
+
+    func selectedRuntimeSource(for version: SemanticVersion) -> String {
+        if let preset = preset(for: version) {
+            return preset.source
+        }
+        return officialCatalogEntry(for: version)?.source.rawValue ?? "Unknown"
+    }
+
+    private func preset(for version: SemanticVersion) -> RuntimePreset? {
+        runtimePresets.first(where: { resolvedPresetVersion(for: $0) == version })
+    }
+
+    private func resolvedPresetVersion(for preset: RuntimePreset) -> SemanticVersion? {
+        if let fixedVersion = preset.selectionVersion {
+            return fixedVersion
+        }
+
+        guard let majorTrack = preset.majorTrack else { return nil }
+        return officialRuntimeCatalog
+            .filter { $0.source == .wineHQOfficial && $0.version.major == majorTrack }
+            .map(\.version)
+            .sorted(by: >)
+            .first
+    }
+
+    private func resolvedPresetURL(for preset: RuntimePreset) -> URL {
+        guard let majorTrack = preset.majorTrack else { return preset.url }
+        return officialRuntimeCatalog
+            .filter { $0.source == .wineHQOfficial && $0.version.major == majorTrack }
+            .sorted(by: { $0.version > $1.version })
+            .first?
+            .url
+            ?? preset.url
+    }
+
+    @ViewBuilder
+    var officialRuntimeSourcesView: some View {
+        if !officialRuntimeCatalog.isEmpty || !runtimePresets.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Official Runtime Sources")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                ForEach(runtimePresets.indices, id: \.self) { index in
+                    let preset = runtimePresets[index]
+                    VStack(alignment: .leading, spacing: 2) {
+                        let label: String
+                        if let version = resolvedPresetVersion(for: preset), preset.majorTrack != nil {
+                            label = "\(preset.label) -> \(version.major).\(version.minor).\(version.patch)"
+                        } else {
+                            label = preset.label
+                        }
+
+                        Text("\(preset.source): \(label)")
+                            .font(.caption)
+                            .fontWeight(.medium)
+
+                        let presetURL = resolvedPresetURL(for: preset)
+                        Link(presetURL.absoluteString, destination: presetURL)
+                            .font(.caption2)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+
+                ForEach(officialRuntimeCatalog, id: \.self) { entry in
+                    VStack(alignment: .leading, spacing: 2) {
+                        let versionText = "\(entry.version.major).\(entry.version.minor).\(entry.version.patch)"
+                        Text("\(entry.source.rawValue): \(versionText)")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                        Link(entry.url.absoluteString, destination: entry.url)
+                            .font(.caption2)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+            }
+        }
+    }
+
+    func applyBuiltinRuntime(version: SemanticVersion) {
+        runtimeLoadingState = .modifying
+        runtimeErrorMessage = nil
+        bottle.settings.wineRuntime = .builtin(version: version)
+        selectedBuiltinRuntimeVersion = version
+        pendingBuiltinRuntimeVersion = version
+        runtimeLoadingState = .success
+        refreshDetectedBottleRuntimeVersion()
+    }
+
+    func applyCustomRuntime(path: String) {
+        runtimeLoadingState = .modifying
+
+        do {
+            let validatedBin = try WhiskyWineInstaller.validateCustomRuntime(path: path)
+            let normalizedPath = validatedBin.path(percentEncoded: false)
+            bottle.settings.wineRuntime = .custom(path: normalizedPath)
+            customRuntimePath = normalizedPath
+            runtimeErrorMessage = nil
+            runtimeLoadingState = .success
+            refreshDetectedBottleRuntimeVersion()
+        } catch {
+            runtimeErrorMessage = error.localizedDescription
+            runtimeLoadingState = .success
+        }
+    }
+
+    func openCustomRuntimePicker() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Wine Runtime"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+
+        if panel.runModal() == .OK, let selectedURL = panel.url {
+            applyCustomRuntime(path: selectedURL.path(percentEncoded: false))
         }
     }
 
