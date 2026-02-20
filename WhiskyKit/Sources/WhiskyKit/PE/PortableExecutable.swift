@@ -62,6 +62,11 @@ public struct PEFile: Hashable, Equatable, Sendable {
 
     public init(url: URL) throws {
         self.url = url
+
+        if let isValidPEFile = RustCoreBridge.validatePortableExecutable(at: url), !isValidPEFile {
+            throw PEError.invalidPEFile
+        }
+
         let fileHandle = try FileHandle(forReadingFrom: url)
         defer {
             try? fileHandle.close()
