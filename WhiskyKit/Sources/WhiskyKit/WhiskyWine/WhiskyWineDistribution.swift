@@ -109,7 +109,7 @@ public enum WhiskyWineDistribution {
             group.addTask { await fetchWineHQOfficialRelease() }
             group.addTask { await fetchWineOfficialGitHubRelease(forMajor: 7) }
             group.addTask { await fetchWineOfficialGitHubRelease(forMajor: 8) }
-            group.addTask { await fetchWineOfficialGitHubRelease(forVersion: SemanticVersion(9, 22, 0)) }
+            group.addTask { await fetchWineOfficialGitHubRelease(forVersion: SemanticVersion(9, 21, 0)) }
             group.addTask { await fetchWineOfficialGitHubRelease(forVersion: SemanticVersion(11, 2, 0)) }
 
             var entries: Set<RuntimeCatalogEntry> = []

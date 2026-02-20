@@ -63,8 +63,8 @@ struct ConfigView: View {
         ("7.x", "Wine Official", nil, 7, "https://github.com/Gcenx/macOS_Wine_builds/releases"),
         ("8.x", "Wine Official", nil, 8, "https://github.com/Gcenx/macOS_Wine_builds/releases"),
         (
-            "9.22", "Wine Official", SemanticVersion(9, 22, 0), nil,
-            "https://github.com/Gcenx/macOS_Wine_builds/releases/download/9.22/wine-devel-9.22-osx64.tar.xz"
+            "9.21", "Wine Official", SemanticVersion(9, 21, 0), nil,
+            "https://github.com/Gcenx/macOS_Wine_builds/releases/download/9.21/wine-devel-9.21-osx64.tar.xz"
         ),
         (
             "11.2", "Wine Official", SemanticVersion(11, 2, 0), nil,
