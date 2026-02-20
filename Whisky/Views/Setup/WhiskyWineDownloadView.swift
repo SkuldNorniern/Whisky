@@ -29,6 +29,7 @@ struct WhiskyWineDownloadView: View {
     @State private var startTime: Date?
     @Binding var tarLocation: URL
     @Binding var path: [SetupStage]
+    var runtimeArchiveURL: URL = WhiskyWineDistribution.runtimeArchiveURL
     var body: some View {
         VStack {
             VStack {
@@ -65,7 +66,7 @@ struct WhiskyWineDownloadView: View {
         .frame(width: 400, height: 200)
         .onAppear {
             Task {
-                if WhiskyWineDistribution.runtimeArchiveURL.isFileURL {
+                if runtimeArchiveURL.isFileURL {
                     await MainActor.run {
                         downloadSpeed = 0
                         completedBytes = 1
@@ -75,7 +76,7 @@ struct WhiskyWineDownloadView: View {
 
                     do {
                         let localArchive = try copyLocalRuntimeArchiveToTemporaryFile(
-                            from: WhiskyWineDistribution.runtimeArchiveURL
+                            from: runtimeArchiveURL
                         )
 
                         await MainActor.run {
@@ -90,7 +91,7 @@ struct WhiskyWineDownloadView: View {
                 }
 
                 let session = URLSession(configuration: .ephemeral)
-                downloadTask = session.downloadTask(with: WhiskyWineDistribution.runtimeArchiveURL) { url, _, _ in
+                downloadTask = session.downloadTask(with: runtimeArchiveURL) { url, _, _ in
                     Task.detached {
                         await MainActor.run {
                             if let url = url {

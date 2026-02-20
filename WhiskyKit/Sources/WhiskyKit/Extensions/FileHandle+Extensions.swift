@@ -74,8 +74,11 @@ extension FileHandle {
         header += "Bottle Name: \(bottle.settings.name)\n"
         header += "Bottle URL: \(bottle.url.path)\n\n"
 
-        if let version = WhiskyWineInstaller.whiskyWineVersion() {
-            header += "WhiskyWine Version: \(version.major).\(version.minor).\(version.patch)\n"
+        switch bottle.settings.wineRuntime {
+        case .builtin(let version):
+            header += "WhiskyWine Runtime: builtin \(version.major).\(version.minor).\(version.patch)\n"
+        case .custom(let path):
+            header += "WhiskyWine Runtime: custom \(path)\n"
         }
         header += "Windows Version: \(bottle.settings.windowsVersion)\n"
         header += "Enhanced Sync: \(bottle.settings.enhancedSync)\n\n"
