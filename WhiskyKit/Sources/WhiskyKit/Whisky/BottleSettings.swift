@@ -89,24 +89,74 @@ public enum EnhancedSync: Codable, Equatable {
     case none, esync, msync
 }
 
+public enum BottleWineRuntime: Codable, Equatable, Hashable, Sendable {
+    case builtin(version: SemanticVersion)
+    case custom(path: String)
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case version
+        case path
+    }
+
+    private enum RuntimeType: String, Codable {
+        case builtin
+        case custom
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decodeIfPresent(RuntimeType.self, forKey: .type) ?? .builtin
+
+        switch type {
+        case .builtin:
+            let version = try container.decodeIfPresent(SemanticVersion.self, forKey: .version)
+                ?? BottleWineConfig.defaultWineVersion
+            self = .builtin(version: version)
+        case .custom:
+            let path = try container.decodeIfPresent(String.self, forKey: .path) ?? ""
+            self = .custom(path: path)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+
+        switch self {
+        case .builtin(let version):
+            try container.encode(RuntimeType.builtin, forKey: .type)
+            try container.encode(version, forKey: .version)
+        case .custom(let path):
+            try container.encode(RuntimeType.custom, forKey: .type)
+            try container.encode(path, forKey: .path)
+        }
+    }
+}
+
 public struct BottleWineConfig: Codable, Equatable {
     static let defaultWineVersion = WhiskyWineDistribution.defaultWineVersion
     var wineVersion: SemanticVersion = Self.defaultWineVersion
+    var wineRuntime: BottleWineRuntime = .builtin(version: Self.defaultWineVersion)
     var windowsVersion: WinVersion = .win10
     var enhancedSync: EnhancedSync = .msync
     var avxEnabled: Bool = false
 
     public init() {}
 
-    // swiftlint:disable line_length
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.wineVersion = try container.decodeIfPresent(SemanticVersion.self, forKey: .wineVersion) ?? Self.defaultWineVersion
+        self.wineVersion = try container.decodeIfPresent(SemanticVersion.self, forKey: .wineVersion)
+            ?? Self.defaultWineVersion
+        self.wineRuntime = try container.decodeIfPresent(BottleWineRuntime.self, forKey: .wineRuntime)
+            ?? .builtin(version: self.wineVersion)
         self.windowsVersion = try container.decodeIfPresent(WinVersion.self, forKey: .windowsVersion) ?? .win10
         self.enhancedSync = try container.decodeIfPresent(EnhancedSync.self, forKey: .enhancedSync) ?? .msync
         self.avxEnabled = try container.decodeIfPresent(Bool.self, forKey: .avxEnabled) ?? false
+
+        if case .builtin(let version) = self.wineRuntime {
+            self.wineVersion = version
+        }
     }
-    // swiftlint:enable line_length
 }
 
 public struct BottleMetalConfig: Codable, Equatable {
@@ -178,8 +228,27 @@ public struct BottleSettings: Codable, Equatable {
 
     /// The version of wine used by this bottle
     public var wineVersion: SemanticVersion {
-        get { return wineConfig.wineVersion }
-        set { wineConfig.wineVersion = newValue }
+        get {
+            if case .builtin(let version) = wineConfig.wineRuntime {
+                return version
+            }
+            return wineConfig.wineVersion
+        }
+        set {
+            wineConfig.wineVersion = newValue
+            wineConfig.wineRuntime = .builtin(version: newValue)
+        }
+    }
+
+    /// The runtime used by this bottle
+    public var wineRuntime: BottleWineRuntime {
+        get { return wineConfig.wineRuntime }
+        set {
+            wineConfig.wineRuntime = newValue
+            if case .builtin(let version) = newValue {
+                wineConfig.wineVersion = version
+            }
+        }
     }
 
     /// The version of windows used by this bottle

@@ -25,6 +25,8 @@ struct WhiskyWineInstallView: View {
     @Binding var tarLocation: URL
     @Binding var path: [SetupStage]
     @Binding var showSetup: Bool
+    var installAction: ((URL) async -> Bool)?
+    var onInstallCompleted: (() -> Void)?
 
     var body: some View {
         VStack {
@@ -62,16 +64,19 @@ struct WhiskyWineInstallView: View {
         }
         .frame(width: 400, height: 200)
         .onAppear {
-            Task.detached {
-                let didInstall = await WhiskyWineInstaller.install(from: tarLocation)
-                await MainActor.run {
-                    installing = false
-                    installFailed = !didInstall
+            Task {
+                let didInstall = if let installAction {
+                    await installAction(tarLocation)
+                } else {
+                    await WhiskyWineInstaller.install(from: tarLocation)
                 }
+                installing = false
+                installFailed = !didInstall
 
                 if didInstall {
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    await proceed()
+                    onInstallCompleted?()
+                    proceed()
                 }
             }
         }

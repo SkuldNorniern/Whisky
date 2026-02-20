@@ -20,6 +20,8 @@ import Foundation
 import CryptoKit
 import SemanticVersion
 
+// swiftlint:disable file_length
+// swiftlint:disable type_body_length
 public class WhiskyWineInstaller {
     /// The Whisky application folder
     public static let applicationFolder = FileManager.default.urls(
@@ -31,6 +33,12 @@ public class WhiskyWineInstaller {
 
     /// URL to the installed `wine` `bin` directory
     public static let binFolder: URL = libraryFolder.appending(path: "Wine").appending(path: "bin")
+
+    /// Folder for versioned managed runtimes
+    public static let runtimesFolder: URL = applicationFolder.appending(path: "Runtimes")
+
+    /// Folder for managed runtime utilities (DXVK, winetricks, verbs)
+    public static let toolsFolder: URL = libraryFolder
 
     public static func isWhiskyWineInstalled() -> Bool {
         return whiskyWineVersion() != nil
@@ -179,7 +187,6 @@ public class WhiskyWineInstaller {
 
     private static func validateRuntimeLayout() throws {
         let requiredPaths = [
-            libraryFolder.appending(path: "Wine/bin/wine64"),
             libraryFolder.appending(path: "Wine/bin/wineserver"),
             libraryFolder.appending(path: "DXVK/x64"),
             libraryFolder.appending(path: "DXVK/x32"),
@@ -202,6 +209,15 @@ public class WhiskyWineInstaller {
                 userInfo: [NSLocalizedDescriptionKey: "Runtime layout validation failed. Missing: \(pathList)"]
             )
         }
+
+        let runtimeBin = libraryFolder.appending(path: "Wine/bin")
+        guard wineExecutableExists(in: runtimeBin) else {
+            throw NSError(
+                domain: "WhiskyWineInstaller",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Runtime layout validation failed. Missing wine executable"]
+            )
+        }
     }
 
     public static func whiskyWineVersion() -> SemanticVersion? {
@@ -217,6 +233,213 @@ public class WhiskyWineInstaller {
         } catch {
             print(error)
             return nil
+        }
+    }
+
+    public static func availableBuiltinWineVersions() -> [SemanticVersion] {
+        var versions = Set<SemanticVersion>()
+        versions.insert(WhiskyWineDistribution.defaultWineVersion)
+
+        if let installedVersion = whiskyWineVersion() {
+            versions.insert(installedVersion)
+        }
+
+        if let runtimeDirectories = try? FileManager.default.contentsOfDirectory(
+            at: runtimesFolder,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            for directory in runtimeDirectories {
+                guard let isDirectory = try? directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory,
+                      isDirectory,
+                      let version = SemanticVersion(directory.lastPathComponent) else {
+                    continue
+                }
+                versions.insert(version)
+            }
+        }
+
+        return versions.sorted(by: >)
+    }
+
+    public static func isBuiltinVersionInstalled(_ version: SemanticVersion) -> Bool {
+        let versionFolder = runtimesFolder
+            .appending(path: "\(version.major).\(version.minor).\(version.patch)")
+            .appending(path: "Wine")
+            .appending(path: "bin")
+
+        if wineExecutableExists(in: versionFolder) {
+            return true
+        }
+
+        guard let installedVersion = whiskyWineVersion(), installedVersion == version else {
+            return false
+        }
+
+        return wineExecutableExists(in: binFolder)
+    }
+
+    public static func builtinBinFolder(version: SemanticVersion) -> URL {
+        let versionFolder = runtimesFolder
+            .appending(path: "\(version.major).\(version.minor).\(version.patch)")
+            .appending(path: "Wine")
+            .appending(path: "bin")
+
+        if wineExecutableExists(in: versionFolder) {
+            return versionFolder
+        }
+
+        return binFolder
+    }
+
+    public static func resolveBinFolder(for runtime: BottleWineRuntime) throws -> URL {
+        switch runtime {
+        case .builtin(let version):
+            guard isBuiltinVersionInstalled(version) else {
+                throw WhiskyWineRuntimeValidationError.builtinRuntimeNotInstalled(version)
+            }
+            return builtinBinFolder(version: version)
+        case .custom(let path):
+            return try validateCustomRuntime(path: path)
+        }
+    }
+
+    public static func installBuiltinRuntime(version: SemanticVersion, from archiveURL: URL) async -> Bool {
+        defer {
+            try? FileManager.default.removeItem(at: archiveURL)
+        }
+
+        do {
+            if !FileManager.default.fileExists(atPath: runtimesFolder.path(percentEncoded: false)) {
+                try FileManager.default.createDirectory(at: runtimesFolder, withIntermediateDirectories: true)
+            }
+
+            let extractionRoot = FileManager.default.temporaryDirectory
+                .appending(path: "whisky-runtime-extract-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: extractionRoot, withIntermediateDirectories: true)
+            defer {
+                try? FileManager.default.removeItem(at: extractionRoot)
+            }
+
+            try Tar.untar(tarBall: archiveURL, toURL: extractionRoot)
+
+            guard let runtimeRoot = try locateRuntimeRoot(in: extractionRoot) else {
+                throw WhiskyWineRuntimeValidationError.missingWineBinaries(extractionRoot.path(percentEncoded: false))
+            }
+
+            let destinationRoot = runtimesFolder
+                .appending(path: "\(version.major).\(version.minor).\(version.patch)")
+                .appending(path: "Wine")
+
+            if FileManager.default.fileExists(atPath: destinationRoot.path(percentEncoded: false)) {
+                try FileManager.default.removeItem(at: destinationRoot)
+            }
+
+            try FileManager.default.createDirectory(
+                at: destinationRoot.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try FileManager.default.copyItem(at: runtimeRoot, to: destinationRoot)
+
+            let wineBin = destinationRoot.appending(path: "bin")
+            let wineserver = destinationRoot.appending(path: "bin").appending(path: "wineserver")
+            guard wineExecutableExists(in: wineBin),
+                  FileManager.default.fileExists(atPath: wineserver.path(percentEncoded: false)) else {
+                throw WhiskyWineRuntimeValidationError.missingWineBinaries(destinationRoot.path(percentEncoded: false))
+            }
+
+            return true
+        } catch {
+            print("Failed to install built-in runtime: \(error)")
+            return false
+        }
+    }
+
+    private static func locateRuntimeRoot(in extractionRoot: URL) throws -> URL? {
+        let fileManager = FileManager.default
+
+        let directCandidates = [
+            extractionRoot,
+            extractionRoot.appending(path: "Libraries").appending(path: "Wine")
+        ]
+
+        for candidate in directCandidates where isRuntimeRoot(candidate) {
+            return candidate
+        }
+
+        let enumerator = fileManager.enumerator(at: extractionRoot, includingPropertiesForKeys: [.isDirectoryKey])
+        while let url = enumerator?.nextObject() as? URL {
+            if isRuntimeRoot(url) {
+                return url
+            }
+        }
+
+        return nil
+    }
+
+    private static func isRuntimeRoot(_ url: URL) -> Bool {
+        let bin = url.appending(path: "bin")
+        let wineserver = bin.appending(path: "wineserver")
+        return wineExecutableExists(in: bin)
+            && FileManager.default.fileExists(atPath: wineserver.path(percentEncoded: false))
+    }
+
+    public static func validateCustomRuntime(path: String) throws -> URL {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw WhiskyWineRuntimeValidationError.emptyPath
+        }
+
+        let rootURL = URL(fileURLWithPath: trimmed, isDirectory: true).standardizedFileURL
+        return try validateCustomRuntime(rootURL: rootURL)
+    }
+
+    public static func validateCustomRuntime(rootURL: URL) throws -> URL {
+        let candidates = [
+            rootURL,
+            rootURL.appending(path: "bin"),
+            rootURL.appending(path: "Wine").appending(path: "bin"),
+            rootURL.appending(path: "wine").appending(path: "bin"),
+            rootURL.appending(path: "Contents").appending(path: "Resources").appending(path: "wine")
+                .appending(path: "bin")
+        ]
+
+        for candidate in candidates {
+            let wineserver = candidate.appending(path: "wineserver")
+            if wineExecutableExists(in: candidate)
+                && FileManager.default.fileExists(atPath: wineserver.path(percentEncoded: false)) {
+                return candidate
+            }
+        }
+
+        throw WhiskyWineRuntimeValidationError.missingWineBinaries(rootURL.path(percentEncoded: false))
+    }
+
+    private static func wineExecutableExists(in binFolder: URL) -> Bool {
+        let wine64 = binFolder.appending(path: "wine64")
+        if FileManager.default.fileExists(atPath: wine64.path(percentEncoded: false)) {
+            return true
+        }
+
+        let wine = binFolder.appending(path: "wine")
+        return FileManager.default.fileExists(atPath: wine.path(percentEncoded: false))
+    }
+}
+// swiftlint:enable type_body_length
+
+public enum WhiskyWineRuntimeValidationError: LocalizedError {
+    case emptyPath
+    case missingWineBinaries(String)
+    case builtinRuntimeNotInstalled(SemanticVersion)
+
+    public var errorDescription: String? {
+        switch self {
+        case .emptyPath:
+            return "Custom runtime path is empty."
+        case .missingWineBinaries(let path):
+            return "Could not find a wine executable and wineserver in runtime path: \(path)"
+        case .builtinRuntimeNotInstalled(let version):
+            return "Built-in runtime \(version.major).\(version.minor).\(version.patch) is not installed."
         }
     }
 }
