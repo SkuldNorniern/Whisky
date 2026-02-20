@@ -404,6 +404,7 @@
 				6E40494E29CCA19C006E3F1B /* Sources */,
 				6E40494F29CCA19C006E3F1B /* Frameworks */,
 				6E40495029CCA19C006E3F1B /* Resources */,
+				9A1B2C3D4E5F678901234567 /* Build Rust Core */,
 				6E50D98129CD0EAF008C39F6 /* SwiftLint */,
 				6E95F66C2AB3EF2F00D585D1 /* Embed WhiskyCmd */,
 				6EFDF65A2AAE2DA800EF622F /* Embed Foundation Extensions */,
@@ -560,6 +561,24 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		9A1B2C3D4E5F678901234567 /* Build Rust Core */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust Core";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${SRCROOT}/scripts/build-rust-core.sh\"\n";
+		};
 		6E50D98129CD0EAF008C39F6 /* SwiftLint */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -577,7 +596,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "export PATH=\"$PATH:/opt/homebrew/bin\"\nif which swiftlint > /dev/null; then\n    echo \"Running SwiftLint\"\n    swiftlint --strict\nelse\n    echo \"error: SwiftLint not installed, download from https://github.com/realm/SwiftLint\"\n    exit -1\nfi\n";
+			shellScript = "export PATH=\"$PATH:/opt/homebrew/bin\"\nif which swiftlint > /dev/null; then\n    echo \"Running SwiftLint\"\n    for target in \"Whisky\" \"WhiskyKit/Sources\" \"WhiskyKit/Tests\" \"WhiskyCmd\" \"WhiskyThumbnail\"; do\n        if [ -d \"$target\" ]; then\n            swiftlint lint --strict \"$target\"\n        fi\n    done\nelse\n    echo \"error: SwiftLint not installed, download from https://github.com/realm/SwiftLint\"\n    exit -1\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
