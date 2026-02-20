@@ -159,21 +159,6 @@ public struct BottleWineConfig: Codable, Equatable {
     }
 }
 
-public struct BottleMetalConfig: Codable, Equatable {
-    var metalHud: Bool = false
-    var metalTrace: Bool = false
-    var dxrEnabled: Bool = false
-
-    public init() {}
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.metalHud = try container.decodeIfPresent(Bool.self, forKey: .metalHud) ?? false
-        self.metalTrace = try container.decodeIfPresent(Bool.self, forKey: .metalTrace) ?? false
-        self.dxrEnabled = try container.decodeIfPresent(Bool.self, forKey: .dxrEnabled) ?? false
-    }
-}
-
 public enum DXVKHUD: Codable, Equatable {
     case full, partial, fps, off
 }
@@ -294,6 +279,11 @@ public struct BottleSettings: Codable, Equatable {
         set { metalConfig.dxrEnabled = newValue }
     }
 
+    public var d3d12Profile: D3D12Profile {
+        get { return metalConfig.d3d12Profile }
+        set { metalConfig.d3d12Profile = newValue }
+    }
+
     public var dxvk: Bool {
         get { return dxvkConfig.dxvk }
         set { dxvkConfig.dxvk = newValue }
@@ -385,6 +375,17 @@ public struct BottleSettings: Codable, Equatable {
 
         if dxrEnabled {
             wineEnv.updateValue("1", forKey: "D3DM_SUPPORT_DXR")
+        }
+
+        switch d3d12Profile {
+        case .default:
+            break
+        case .compatibility:
+            wineEnv.updateValue("compatibility", forKey: "WHISKY_D3D12_PROFILE")
+        case .performance:
+            wineEnv.updateValue("performance", forKey: "WHISKY_D3D12_PROFILE")
+        case .experimental:
+            wineEnv.updateValue("experimental", forKey: "WHISKY_D3D12_PROFILE")
         }
     }
 }

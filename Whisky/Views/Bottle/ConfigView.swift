@@ -288,6 +288,12 @@ struct ConfigView: View {
                 .disabled(!bottle.settings.dxvk)
             }
             Section("config.title.metal", isExpanded: $metalSectionExpanded) {
+                Picker("D3D12 Profile", selection: $bottle.settings.d3d12Profile) {
+                    Text("Default").tag(D3D12Profile.default)
+                    Text("Compatibility").tag(D3D12Profile.compatibility)
+                    Text("Performance").tag(D3D12Profile.performance)
+                    Text("Experimental").tag(D3D12Profile.experimental)
+                }
                 Toggle(isOn: $bottle.settings.metalHud) {
                     Text("config.metalHud")
                 }
